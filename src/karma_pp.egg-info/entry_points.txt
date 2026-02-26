@@ -1,0 +1,2 @@
+[console_scripts]
+kpp = karma_pp.__main__:cli

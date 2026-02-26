@@ -1,0 +1,9 @@
+code: karma_pp.impl.mechanisms.karma.karma_mechanism.KarmaMechanism
+parameters:
+  selection_rule:
+    code: karma_pp.impl.mechanisms.karma.max_sum_selection_rule.MaxSumSelectionRule
+    parameters: {}
+  redistribution_rule:
+    code: karma_pp.impl.mechanisms.karma.proportional_redistribution_rule.ProportionalRedistributionRule
+    parameters: {}
+  weight_karma_ratio: 5.0

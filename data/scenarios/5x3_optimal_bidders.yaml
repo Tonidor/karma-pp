@@ -1,0 +1,19 @@
+world_file: data/worlds/3_resource_world.yaml
+mechanism_file: data/mechanisms/karma_mechanism.yaml
+population:
+  optimal_bidding:
+    n_agents: 5
+    weight: 1.0
+    agent_model:
+      code: karma_pp.impl.agents.optimal_bidding_resource_agent.OptimalBiddingResourceAgent
+      parameters:
+        transition_matrix:
+          - [0.8, 0.2]
+          - [0.2, 0.8]
+        urgency_levels: [0, 1]
+        initial_urgency: 0
+        reward_per_resource: [0.0, 0.0, 0.0]
+        no_resource_penalty: [-1.0, -3.0, -1.0]
+        gamma: 0.99
+        belief_alpha: 0.05
+        value_alpha: 0.02

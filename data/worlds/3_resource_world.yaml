@@ -1,0 +1,3 @@
+code: karma_pp.impl.worlds.resource_world.resource_world.ResourceWorld
+parameters:
+  resource_capacities: [1, 1, 1]

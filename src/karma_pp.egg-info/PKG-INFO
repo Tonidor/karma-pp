@@ -1,0 +1,18 @@
+Metadata-Version: 2.4
+Name: karma-pp
+Version: 0.0.1
+Summary: Code.
+Author-email: Antonia Holsten <aholsten@ethz.ch>
+License: MIT
+Classifier: Development Status :: 3 - Alpha
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.12
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: numpy
+Requires-Dist: PyYAML
+Requires-Dist: structlog
+Requires-Dist: click
+Requires-Dist: seaborn
+Requires-Dist: cvxpy

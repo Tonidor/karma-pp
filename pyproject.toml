@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "karma-pp"
+version = "0.0.1"
+authors = [
+    { name = "Antonia Holsten", email = "aholsten@ethz.ch" },
+]
+description = "Code."
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "MIT"}
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "numpy",
+    "PyYAML",
+    "structlog",
+    "click",
+    "seaborn",
+    "cvxpy",
+]
+
+[project.scripts]
+kpp = "karma_pp.__main__:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]

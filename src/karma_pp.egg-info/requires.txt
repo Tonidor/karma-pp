@@ -1,0 +1,6 @@
+numpy
+PyYAML
+structlog
+click
+seaborn
+cvxpy
