@@ -4,3 +4,7 @@ structlog
 click
 seaborn
 cvxpy
+
+[dev]
+pytest>=7.0
+matplotlib

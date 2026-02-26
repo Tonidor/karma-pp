@@ -4,13 +4,14 @@ from typing import Protocol, runtime_checkable
 import numpy as np
 import structlog
 
-from karma_pp.src.mechanism import Mechanism
-from karma_pp.src.types import CollectiveAction, Resolution
+from karma_pp.core.mechanism import Mechanism
+from karma_pp.core.types import CollectiveAction, Resolution
 from karma_pp.utils.loading_utils import Config, instantiate
 
 log = structlog.get_logger(__name__)
 
 Commit = list[int]  # SIGNAL
+
 
 @dataclass
 class KarmaReport[OUTCOME, DECISION]:
@@ -20,14 +21,18 @@ class KarmaReport[OUTCOME, DECISION]:
     transfers: dict[int, int]  # agent_id -> transfer
     selected_outcomes: dict[int, OUTCOME]  # agent_id -> outcome
 
+
 @dataclass
 class KarmaState:
     """Maps agent_id to karma balance."""
+
     agent_balances: dict[int, int]
+
 
 @dataclass
 class KarmaObservation:
     agent_balance: int
+
 
 @dataclass(frozen=True)
 class KarmaResolution[OUTCOME, DECISION](Resolution[OUTCOME]):
@@ -36,6 +41,7 @@ class KarmaResolution[OUTCOME, DECISION](Resolution[OUTCOME]):
     transfer: int
     outcome_scores: list[float]
     n_agents: int
+
 
 @runtime_checkable
 class SelectionRule(Protocol):
@@ -78,20 +84,23 @@ class RedistributionRule(Protocol):
         """
         ...
 
+
 @dataclass(frozen=True)
 class KarmaDynamics:
     selection_rule: SelectionRule
     redistribution_rule: RedistributionRule
     weight_karma_ratio: float
     max_balance: int
+    agent_weights: dict[int, int]  # agent_id -> weight; used by redistribution rule
+
 
 class KarmaMechanism[OUTCOME, DECISION](
     Mechanism[
-        OUTCOME,                      # OUTCOME
-        Commit,                       # SIGNAL
-        KarmaState,                   # MECHANISM_STATE
-        KarmaDynamics,                # MECHANISM_DYNAMICS
-        KarmaObservation,             # MECHANISM_OBSERVATION
+        OUTCOME,                             # OUTCOME
+        Commit,                              # SIGNAL
+        KarmaState,                          # MECHANISM_STATE
+        KarmaDynamics,                       # MECHANISM_DYNAMICS
+        KarmaObservation,                    # MECHANISM_OBSERVATION
         KarmaReport[OUTCOME, DECISION],      # REPORT
         KarmaResolution[OUTCOME, DECISION],  # RESOLUTION
         CollectiveAction[OUTCOME, DECISION], # COLLECTIVE_ACTION
@@ -110,6 +119,8 @@ class KarmaMechanism[OUTCOME, DECISION](
         self.redistribution_rule: RedistributionRule = instantiate(redistribution_rule["code"], redistribution_rule["parameters"])
         self.weight_karma_ratio = weight_karma_ratio
         self.max_balance: int | None = None
+        # Stored at initialize() time so run() can pass correct weights to redistribution_rule.
+        self._agent_weights: dict[int, int] = {}
 
     def initialize(
         self,
@@ -123,11 +134,13 @@ class KarmaMechanism[OUTCOME, DECISION](
         if any(b < 0 for b in agent_balances.values()):
             raise ValueError("Agent balances must be non-negative.")
         self.max_balance = sum(agent_balances.values())
+        self._agent_weights = dict(agent_weights)
         dynamics = KarmaDynamics(
             selection_rule=self.selection_rule,
             redistribution_rule=self.redistribution_rule,
             weight_karma_ratio=self.weight_karma_ratio,
             max_balance=self.max_balance,
+            agent_weights=agent_weights,
         )
         log.debug("mechanism_state_initialized", agent_balances=agent_balances)
         return KarmaState(agent_balances=agent_balances), dynamics
@@ -183,9 +196,13 @@ class KarmaMechanism[OUTCOME, DECISION](
         selected_idx = int(rng.choice(len(probs), p=probs))
         collective_decision: DECISION = decisions[selected_idx]
 
-        # Transfers for selected decision: one signal per agent (column selected_idx)
+        # Transfers for selected decision: one signal per agent (column selected_idx).
+        # Agent weights are ordered to match collective_action.agent_ids.
         commits_selected = [commits[row_idx][selected_idx] for row_idx in range(n_agents)]
-        agent_weights_list = [1 for _ in range(n_agents)]
+        agent_weights_list = [
+            int(self._agent_weights.get(agent_id, 1))
+            for agent_id in agent_ids
+        ]
         possible_transfers, transfer_probs = self.redistribution_rule(
             commits_selected,
             agent_weights_list,
@@ -255,10 +272,18 @@ class KarmaMechanism[OUTCOME, DECISION](
         report: KarmaReport[OUTCOME, DECISION] | None,
         rng: np.random.Generator,
     ) -> KarmaState:
-        """Update the karma mechanism state."""
+        """Apply transfers from report to produce the next karma state.
 
-        if previous is None or report is None:
-            raise ValueError("previous mechanism state and report required when timestep > 0")
+        Note: call initialize() before the simulation loop to create the initial
+        state. This method requires both a valid previous state and a report.
+        """
+        if previous is None:
+            raise ValueError(
+                "KarmaMechanism.update_state requires a non-None previous state. "
+                "Call initialize() to create the initial mechanism state."
+            )
+        if report is None:
+            raise ValueError("KarmaMechanism.update_state requires a non-None report.")
 
         new_balances = {
             agent_id: previous.agent_balances[agent_id] + report.transfers.get(agent_id, 0)

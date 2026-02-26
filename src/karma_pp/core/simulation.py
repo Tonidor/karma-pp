@@ -4,10 +4,10 @@ from typing import Any
 import numpy as np
 import structlog
 
-from karma_pp.src.population import Population
-from karma_pp.src.types import PopulationState
-from karma_pp.src.world import World
-from karma_pp.src.mechanism import Mechanism
+from karma_pp.core.population import Population
+from karma_pp.core.types import PopulationState
+from karma_pp.core.world import World
+from karma_pp.core.mechanism import Mechanism
 from karma_pp.utils.loading_utils import Config, instantiate
 
 log = structlog.get_logger(__name__)
@@ -95,6 +95,14 @@ def run_simulation(
             rng=rng,
         )
 
+        # Resolve outcomes before updating state, so get_resolutions always
+        # receives the same mechanism_state that was used to run the mechanism.
+        resolutions = mechanism.get_resolutions(
+            mechanism_state=mechanism_state,
+            collective_action=collective_action,
+            report=report,
+        )
+
         # Update mechanism and world states
         mechanism_state = mechanism.update_state(
             previous=mechanism_state,
@@ -107,12 +115,6 @@ def run_simulation(
             rng=rng,
         )
 
-        # Reward and update population state
-        resolutions = mechanism.get_resolutions(
-            mechanism_state=mechanism_state,
-            collective_action=collective_action,
-            report=report,
-        )
         rewards = population.get_rewards(
             population_state=population_state,
             observations=observations,

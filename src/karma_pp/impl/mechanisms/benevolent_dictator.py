@@ -1,17 +1,17 @@
 from dataclasses import dataclass
-from types import NoneType
 
 import numpy as np
 import structlog
 
-from karma_pp.src.mechanism import Mechanism
-from karma_pp.src.types import CollectiveAction, Resolution
+from karma_pp.core.mechanism import Mechanism
+from karma_pp.core.types import CollectiveAction, Resolution
 
 log = structlog.get_logger(__name__)
 
-BenevolentDictatorState = NoneType
-BenevolentDictatorDynamics = NoneType
-Observation = NoneType
+# The benevolent dictator is stateless; both state and dynamics are represented as None.
+BenevolentDictatorState = type(None)
+BenevolentDictatorDynamics = type(None)
+Observation = type(None)
 Signal = list[float]
 
 
@@ -54,10 +54,8 @@ class BenevolentDictatorMechanism[OUTCOME, DECISION](
         agent_weights: dict[int, int],
         rng: np.random.Generator,
     ) -> tuple[BenevolentDictatorState, BenevolentDictatorDynamics]:
-        return BenevolentDictatorState(), BenevolentDictatorDynamics()
-
-    def get_dynamics(self) -> BenevolentDictatorDynamics:
-        return BenevolentDictatorDynamics()
+        # Stateless mechanism: both state and dynamics are None.
+        return None, None
 
     def run(
         self,
@@ -148,5 +146,5 @@ class BenevolentDictatorMechanism[OUTCOME, DECISION](
         report: DictatorReport[OUTCOME, DECISION] | None,
         rng: np.random.Generator,
     ) -> BenevolentDictatorState:
-        # Stateless mechanism; state is intentionally unchanged over time.
-        return previous
+        # Stateless mechanism: state is always None.
+        return None

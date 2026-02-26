@@ -1,14 +1,13 @@
 from dataclasses import dataclass
-from types import NoneType
 
 import numpy as np
 
 from karma_pp.impl.agents.resource_agent import ResourceAgentObservation, ResourceAgent
 from karma_pp.impl.mechanisms.karma.karma_mechanism import KarmaDynamics, KarmaResolution, KarmaState
 from karma_pp.impl.worlds.resource_world.resource_world import ResourceWorldDynamics, ResourceWorldState
-from karma_pp.src.types import AgentState, PopulationState
+from karma_pp.core.types import AgentState, PopulationState
 
-PolicyState = NoneType
+PolicyState = type(None)  # type alias; actual policy state is always None
 Outcome = tuple[bool]
 Commit = int
 
@@ -59,7 +58,7 @@ class RandomResourceAgent(
         observation: RandomObservation,
         rng: np.random.Generator,
     ) -> list[Commit]:
-        return [int(rng.integers(0, observation.agent_balance + 1)) for _ in self._get_outcomes(observation)]
+        return [int(rng.integers(0, observation.agent_balance + 1)) for _ in outcomes]
 
     def adapt(
         self,

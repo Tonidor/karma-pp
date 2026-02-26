@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
-from karma_pp.src.types import AgentState, PopulationState
+from karma_pp.core.types import AgentState, PopulationState
 
 
 class AgentModel[

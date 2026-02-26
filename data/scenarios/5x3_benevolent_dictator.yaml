@@ -1,5 +1,5 @@
-world_file: data/worlds/3_resource_world.yaml
-mechanism_file: data/mechanisms/benevolent_dictator.yaml
+world_file: ../worlds/3_resource_world.yaml
+mechanism_file: ../mechanisms/benevolent_dictator.yaml
 population:
   truthful:
     n_agents: 5

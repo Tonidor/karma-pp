@@ -3,8 +3,8 @@ from typing import Any
 import numpy as np
 import structlog
 
-from karma_pp.src.agent import AgentModel
-from karma_pp.src.types import AgentState, PopulationState
+from karma_pp.core.agent import AgentModel
+from karma_pp.core.types import AgentState, PopulationState
 from karma_pp.utils.loading_utils import instantiate
 
 log = structlog.get_logger(__name__)
@@ -103,19 +103,13 @@ class Population[
         actions: list[list[tuple[OUTCOME, SIGNAL]]] = []
         for agent_id, state in population_state.agent_states.items():
             model = self.model_registry[self.agent_model_map[agent_id]]
-            actions.append(
-                model.get_action(
-                    agent_state=state,
-                    observation=observations[agent_id],
-                    rng=rng,
-                )
+            agent_actions = model.get_action(
+                agent_state=state,
+                observation=observations[agent_id],
+                rng=rng,
             )
-        for i, (agent_id, state) in enumerate(population_state.agent_states.items()):
-            log.info(
-                "get_actions",
-                agent_id=agent_id,
-                actions=actions[i],
-            )
+            log.info("get_actions", agent_id=agent_id, actions=agent_actions)
+            actions.append(agent_actions)
         return actions
 
     def get_rewards(

@@ -6,7 +6,7 @@ import numpy as np
 from karma_pp.impl.agents.resource_agent import ResourceAgentObservation, ResourceAgent
 from karma_pp.impl.mechanisms.karma.karma_mechanism import KarmaDynamics, KarmaResolution, KarmaState
 from karma_pp.impl.worlds.resource_world.resource_world import ResourceWorldDynamics, ResourceWorldState
-from karma_pp.src.types import AgentState, PopulationState
+from karma_pp.core.types import AgentState, PopulationState
 
 StateKey = tuple[int, int]
 ActionKey = tuple[int, ...]
@@ -27,9 +27,18 @@ class QLearningObservation(ResourceAgentObservation):
 
 @dataclass
 class QLearningPolicyState:
+    """Per-agent Q-learning state.
+
+    Note: last_state and last_action are written in-place by _get_action so
+    that adapt() (called in the same timestep) can read the (s, a) pair for
+    the Q-update.  All other state transitions return new objects.
+    """
+
     Q: dict[tuple[StateKey, ActionKey], float] = field(default_factory=dict)
     last_state: StateKey | None = None
     last_action: ActionKey | None = None
+    epsilon: float = 0.5      # per-agent exploration rate, decayed in adapt()
+    max_balance: int = 0      # set once from mechanism_dynamics at initialize time
 
 
 class QLearningResourceAgent(
@@ -63,11 +72,10 @@ class QLearningResourceAgent(
             no_resource_penalty=no_resource_penalty,
         )
         self.alpha = float(alpha)
-        self.epsilon = float(epsilon)
+        self.init_epsilon = float(epsilon)
         self.gamma = float(gamma)
         self.epsilon_min = float(epsilon_min)
         self.epsilon_decay = float(epsilon_decay)
-        self._max_balance = 0
 
     def _initialize_policy(
         self,
@@ -75,8 +83,13 @@ class QLearningResourceAgent(
         mechanism_dynamics: KarmaDynamics,
         rng: np.random.Generator,
     ) -> QLearningPolicyState:
-        self._max_balance = mechanism_dynamics.max_balance
-        return QLearningPolicyState(Q={}, last_state=None, last_action=None)
+        return QLearningPolicyState(
+            Q={},
+            last_state=None,
+            last_action=None,
+            epsilon=self.init_epsilon,
+            max_balance=mechanism_dynamics.max_balance,
+        )
 
     def get_observation(
         self,
@@ -100,18 +113,24 @@ class QLearningResourceAgent(
         observation: QLearningObservation,
         rng: np.random.Generator,
     ) -> list[Commit]:
-        memory = agent_state.policy
+        policy = agent_state.policy
         n_outcomes = len(outcomes)
-        balance = int(np.clip(observation.agent_balance, 0, self._max_balance))
+        balance = int(np.clip(observation.agent_balance, 0, policy.max_balance))
         state: StateKey = (int(agent_state.private), balance)
         actions = _valid_actions(balance, n_outcomes)
         if not actions:
-            return [0] * n_outcomes
-        q_vals = [memory.Q.get((state, a), 0.0) for a in actions]
-        idx = int(rng.integers(0, len(actions))) if rng.random() < self.epsilon else int(np.argmax(q_vals))
+            chosen = tuple([0] * n_outcomes)
+            policy.last_state = state
+            policy.last_action = chosen
+            return list(chosen)
+        q_vals = [policy.Q.get((state, a), 0.0) for a in actions]
+        idx = int(rng.integers(0, len(actions))) if rng.random() < policy.epsilon else int(np.argmax(q_vals))
         chosen = actions[idx]
-        memory.last_state = state
-        memory.last_action = chosen
+        # Store (state, action) so adapt() can perform the Q-update.
+        # This is intentional in-place mutation of the mutable policy dataclass;
+        # it avoids threading an extra return value through the interface.
+        policy.last_state = state
+        policy.last_action = chosen
         return list(chosen)
 
     def adapt(
@@ -124,24 +143,27 @@ class QLearningResourceAgent(
         rng: np.random.Generator,
     ) -> AgentState[int, QLearningPolicyState]:
         del resolution, timestep, rng
-        memory = previous.policy
-        new_memory = QLearningPolicyState(
-            Q=dict(memory.Q),
-            last_state=memory.last_state,
-            last_action=memory.last_action,
+        policy = previous.policy
+        new_policy = QLearningPolicyState(
+            Q=dict(policy.Q),
+            last_state=policy.last_state,
+            last_action=policy.last_action,
+            epsilon=policy.epsilon,
+            max_balance=policy.max_balance,
         )
-        s = memory.last_state
-        a = memory.last_action
+        s = policy.last_state
+        a = policy.last_action
         n_outcomes = len(a) if a is not None else 0
         if s is not None and a is not None and n_outcomes > 0:
-            balance_next = int(np.clip(observation.agent_balance, 0, self._max_balance))
+            balance_next = int(np.clip(observation.agent_balance, 0, policy.max_balance))
             s_next: StateKey = (int(previous.private), balance_next)
             actions_next = _valid_actions(balance_next, n_outcomes)
-            max_q_next = max((memory.Q.get((s_next, an), 0.0) for an in actions_next), default=0.0)
+            max_q_next = max((policy.Q.get((s_next, an), 0.0) for an in actions_next), default=0.0)
             key = (s, a)
-            old_q = memory.Q.get(key, 0.0)
+            old_q = policy.Q.get(key, 0.0)
             td_target = float(reward) + self.gamma * max_q_next
-            new_memory.Q[key] = old_q + self.alpha * (td_target - old_q)
+            new_policy.Q[key] = old_q + self.alpha * (td_target - old_q)
 
-        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
-        return AgentState(private=previous.private, policy=new_memory)
+        # Decay exploration rate per agent, clipping at epsilon_min.
+        new_policy.epsilon = max(self.epsilon_min, policy.epsilon * self.epsilon_decay)
+        return AgentState(private=previous.private, policy=new_policy)

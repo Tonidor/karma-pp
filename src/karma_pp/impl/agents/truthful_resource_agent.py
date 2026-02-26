@@ -1,11 +1,9 @@
-from dataclasses import dataclass
-
 import numpy as np
 
 from karma_pp.impl.agents.resource_agent import ResourceAgentObservation, ResourceAgent
 from karma_pp.impl.mechanisms.benevolent_dictator import DictatorResolution
 from karma_pp.impl.worlds.resource_world.resource_world import ResourceWorldDynamics, ResourceWorldState
-from karma_pp.src.types import AgentState, PopulationState
+from karma_pp.core.types import AgentState, PopulationState
 
 PolicyState = None
 Outcome = tuple[bool]
@@ -49,15 +47,8 @@ class TruthfulResourceAgent[MECHANISM_STATE](
         observation: ResourceAgentObservation,
         rng: np.random.Generator,
     ) -> list[Reward]:
-        urgency = float(agent_state.private)
-        rewards: list[Reward] = []
-        for outcome in outcomes:
-            outcome_arr = np.array(outcome)
-            resource_rewards = self.reward_per_resource * outcome_arr
-            resource_penalties = self.no_resource_penalty * (1 - outcome_arr)
-            reward = urgency * sum(resource_rewards + resource_penalties)
-            rewards.append(reward)
-        return rewards
+        urgency = int(agent_state.private)
+        return [self._outcome_reward(urgency, outcome) for outcome in outcomes]
 
     def adapt(
         self,

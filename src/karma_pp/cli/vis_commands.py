@@ -7,7 +7,7 @@ import structlog
 import yaml
 
 from karma_pp.logging_config import configure_logging
-from karma_pp.src.simulation import create_components, run_simulation
+from karma_pp.core.simulation import create_components, run_simulation
 from karma_pp.utils.agent_measures import (
     get_markov_lambda_star,
     get_markov_spike_index,
@@ -232,7 +232,7 @@ def _load_scenario_cfgs(scenario: str) -> tuple[dict, dict, dict]:
         mechanism_cfg = yaml.safe_load(f)
 
     population_cfg = {
-        "code": "karma_pp.src.population.Population",
+        "code": "karma_pp.core.population.Population",
         "parameters": {
             "agent_type_cfgs": scenario_cfg["population"],
         },

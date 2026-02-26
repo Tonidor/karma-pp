@@ -4,8 +4,8 @@ from itertools import product
 import numpy as np
 import structlog
 
-from karma_pp.src.world import World
-from karma_pp.src.types import CollectiveAction
+from karma_pp.core.world import World
+from karma_pp.core.types import CollectiveAction
 
 log = structlog.get_logger(__name__)
 

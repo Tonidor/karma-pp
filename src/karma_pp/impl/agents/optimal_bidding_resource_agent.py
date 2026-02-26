@@ -6,7 +6,7 @@ import numpy as np
 from karma_pp.impl.agents.resource_agent import ResourceAgentObservation, ResourceAgent
 from karma_pp.impl.mechanisms.karma.karma_mechanism import KarmaDynamics, KarmaResolution, KarmaState
 from karma_pp.impl.worlds.resource_world.resource_world import ResourceWorldDynamics, ResourceWorldState
-from karma_pp.src.types import AgentState, PopulationState
+from karma_pp.core.types import AgentState, PopulationState
 
 Outcome = tuple[bool]
 Commit = int
@@ -33,6 +33,8 @@ class OptimalBiddingPolicyState:
     value_weight: float
     value_bias: float
     last_balance: int | None
+    max_balance: int       # set once from mechanism_dynamics at initialize time
+    n_outcomes: int        # set once from world_dynamics at initialize time
 
 
 class OptimalBiddingResourceAgent(
@@ -78,8 +80,6 @@ class OptimalBiddingResourceAgent(
         self.init_value_bias = float(init_value_bias)
         self.min_std = float(min_std)
         self.min_lambda = float(min_lambda)
-        self._n_outcomes = 0
-        self._max_balance = 0
 
     def _initialize_policy(
         self,
@@ -88,17 +88,19 @@ class OptimalBiddingResourceAgent(
         rng: np.random.Generator,
     ) -> OptimalBiddingPolicyState:
         del rng
-        self._n_outcomes = len(world_dynamics.resource_capacities) + 1
-        self._max_balance = mechanism_dynamics.max_balance
+        n_outcomes = len(world_dynamics.resource_capacities) + 1
+        max_balance = mechanism_dynamics.max_balance
         return OptimalBiddingPolicyState(
-            support_mu=[0.0 for _ in range(self._n_outcomes)],
-            support_var=[self.init_support_var for _ in range(self._n_outcomes)],
+            support_mu=[0.0 for _ in range(n_outcomes)],
+            support_var=[self.init_support_var for _ in range(n_outcomes)],
             threshold_mu=0.0,
             threshold_var=self.init_threshold_var,
             n_agents_mu=2.0,
             value_weight=max(self.init_value_weight, self.min_lambda),
             value_bias=self.init_value_bias,
             last_balance=None,
+            max_balance=max_balance,
+            n_outcomes=n_outcomes,
         )
 
     def get_observation(
@@ -124,12 +126,21 @@ class OptimalBiddingResourceAgent(
         rng: np.random.Generator,
     ) -> list[Commit]:
         del rng
-        balance = int(np.clip(observation.agent_balance, 0, self._max_balance))
         policy = agent_state.policy
+        balance = int(np.clip(observation.agent_balance, 0, policy.max_balance))
         lambda_k = self._shadow_price(balance=balance, policy=policy)
         urgency = int(agent_state.private)
-        n_resources = self._n_outcomes - 1
-        utility_gain = [0.0] + [urgency for _ in range(n_resources)]
+        n_resources = policy.n_outcomes - 1
+
+        # Utility gain per outcome: 0 for null outcome, then the actual reward
+        # differential (getting vs. not getting that resource) for each resource.
+        # reward_per_resource[r] - no_resource_penalty[r] is the marginal gain
+        # of winning resource r, scaled by urgency.
+        utility_gain = [0.0]
+        for r in range(n_resources):
+            gain = urgency * (float(self.reward_per_resource[r]) - float(self.no_resource_penalty[r]))
+            utility_gain.append(gain)
+
         signals = [0 for _ in range(len(outcomes))]
         for outcome_idx in range(len(outcomes)):
             best_bid = 0
@@ -154,7 +165,7 @@ class OptimalBiddingResourceAgent(
     ) -> AgentState[int, OptimalBiddingPolicyState]:
         del timestep, rng
         old = previous.policy
-        balance_next = int(np.clip(observation.agent_balance, 0, self._max_balance))
+        balance_next = int(np.clip(observation.agent_balance, 0, old.max_balance))
         last_balance = old.last_balance if old.last_balance is not None else balance_next
         value_curr = self._value(balance=last_balance, policy=old)
         value_next = self._value(balance=balance_next, policy=old)
@@ -165,7 +176,7 @@ class OptimalBiddingResourceAgent(
 
         scores = [float(x) for x in getattr(resolution, "outcome_scores", [])]
         finite_scores = [
-            (idx, score) for idx, score in enumerate(scores) if idx < self._n_outcomes and np.isfinite(score)
+            (idx, score) for idx, score in enumerate(scores) if idx < old.n_outcomes and np.isfinite(score)
         ]
         support_mu = list(old.support_mu)
         support_var = list(old.support_var)
@@ -195,6 +206,8 @@ class OptimalBiddingResourceAgent(
             value_weight=float(new_weight),
             value_bias=float(new_bias),
             last_balance=balance_next,
+            max_balance=old.max_balance,
+            n_outcomes=old.n_outcomes,
         )
         return AgentState(private=previous.private, policy=new_policy)
 

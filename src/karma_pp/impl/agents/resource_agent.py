@@ -4,8 +4,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from karma_pp.impl.worlds.resource_world.resource_world import ResourceWorldDynamics, ResourceWorldState
-from karma_pp.src.agent import AgentModel
-from karma_pp.src.types import AgentState, PopulationState
+from karma_pp.core.agent import AgentModel
+from karma_pp.core.types import AgentState, PopulationState
 
 Urgency = int  # Private state
 Outcome = tuple[bool]  # One outcome: which resource (if any)
@@ -69,18 +69,24 @@ class ResourceAgent[
         policy_state = self._initialize_policy(world_dynamics, mechanism_dynamics, rng)
         return AgentState(private=initial_private, policy=policy_state)
 
+    def _outcome_reward(self, urgency: Urgency, outcome: Outcome) -> float:
+        """Compute reward for one agent at one outcome given their urgency.
+
+        Shared by compute_reward and any subclass that needs to evaluate outcomes
+        (e.g. TruthfulResourceAgent.  Extracted to avoid duplicated logic.
+        """
+        outcome_arr = np.array(outcome)
+        resource_rewards = self.reward_per_resource * outcome_arr
+        resource_penalties = self.no_resource_penalty * (1 - outcome_arr)
+        return float(urgency * sum(resource_rewards + resource_penalties))
+
     def compute_reward(
         self,
         agent_state: AgentState[Urgency, POLICY_STATE],
         observation: ResourceAgentObservation,
         resolution: RESOLUTION,
     ) -> float:
-        selected_outcome = np.array(resolution.selected_outcome)
-        urgency = agent_state.private
-        resource_rewards = self.reward_per_resource * selected_outcome
-        resource_penalties = self.no_resource_penalty * (1 - selected_outcome)
-        reward = urgency * sum(resource_rewards + resource_penalties)
-        return reward
+        return self._outcome_reward(agent_state.private, resolution.selected_outcome)
 
     def get_action(
         self,
@@ -154,9 +160,13 @@ class ResourceAgent[
     def _get_action(
         self,
         agent_state: AgentState[int, POLICY_STATE],
+        outcomes: list[Outcome],
         observation: ResourceAgentObservation,
         rng: np.random.Generator,
     ) -> list[Signal]:
+        """Return one signal per outcome.  `outcomes` is the same list produced
+        by `_get_outcomes` and is passed through so subclasses need not recompute it.
+        """
         ...
 
     @abstractmethod

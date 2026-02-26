@@ -1,5 +1,5 @@
-world_file: data/worlds/3_resource_world.yaml
-mechanism_file: data/mechanisms/karma_mechanism.yaml
+world_file: ../worlds/3_resource_world.yaml
+mechanism_file: ../mechanisms/karma_mechanism.yaml
 population:
   q_learner:
     n_agents: 5
