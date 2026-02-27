@@ -1,14 +1,17 @@
+"""SilentResourceAgent: reports zero signal for each outcome."""
+
 import numpy as np
 
-from karma_pp.impl.agents.resource_agent import ResourceAgentObservation, ResourceAgent
+from karma_pp.impl.agents.resource_agent import ResourceAgent, ResourceAgentObservation
 from karma_pp.impl.worlds.resource_world.resource_world import ResourceWorldDynamics, ResourceWorldState
 from karma_pp.core.types import AgentState, PopulationState, Resolution
 
 PolicyState = None
 Outcome = tuple[bool]
-Reward = float  # Signal: rewards per outcome
+Signal = list[float]
 
-class TruthfulResourceAgent[MECHANISM_STATE](
+
+class SilentResourceAgent[MECHANISM_STATE](
     ResourceAgent[
         ResourceWorldState,
         MECHANISM_STATE,
@@ -16,7 +19,7 @@ class TruthfulResourceAgent[MECHANISM_STATE](
         Resolution[Outcome],
     ]
 ):
-    """Truthful agent that reports rewards for benevolent dictator."""
+    """Agent that reports no signal (zero) for each outcome."""
 
     def _initialize_policy(
         self,
@@ -45,9 +48,8 @@ class TruthfulResourceAgent[MECHANISM_STATE](
         outcomes: list[Outcome],
         observation: ResourceAgentObservation,
         rng: np.random.Generator,
-    ) -> list[Reward]:
-        urgency = int(agent_state.private)
-        return [self._outcome_reward(urgency, outcome) for outcome in outcomes]
+    ) -> list[float]:
+        return [0.0] * len(outcomes)
 
     def adapt(
         self,

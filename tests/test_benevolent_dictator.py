@@ -6,7 +6,6 @@ import pytest
 from karma_pp.impl.mechanisms.benevolent_dictator import (
     BenevolentDictatorMechanism,
     DictatorReport,
-    DictatorResolution,
 )
 from karma_pp.core.types import CollectiveAction
 

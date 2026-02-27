@@ -373,6 +373,108 @@ def plot_markov_stationary_violin(
     plt.close()
 
 
+def plot_full_info_policy_and_distribution(
+    pi: np.ndarray,
+    d: np.ndarray,
+    urgency_levels: list[int],
+    urgency_labels: list[str] | None = None,
+    save_path: str = "data/plots/full_info_policy_distribution.png",
+) -> None:
+    """Plot learned policy (Bid vs Karma) and Karma distribution per urgency level.
+
+    Args:
+        pi: Policy array shape (nu, nk, nk), π[u, k, b] = P(bid b | urgency u, karma k).
+        d: Distribution array shape (nu, nk), d[u, k] = P(karma k | urgency u).
+        urgency_levels: List of urgency values, length nu.
+        urgency_labels: Optional column titles (default: f"u = {u}" for each u).
+        save_path: Path to save the figure.
+    """
+    sns.set_theme(style="whitegrid")
+    sns.set(font_scale=1.2)
+    sns.set_context("paper", font_scale=1.3, rc={"lines.linewidth": 2.0})
+
+    nu, nk, _ = pi.shape
+    if d.shape != (nu, nk):
+        raise ValueError(f"d shape {d.shape} must match (nu={nu}, nk={nk}).")
+    if len(urgency_levels) != nu:
+        raise ValueError(f"urgency_levels length {len(urgency_levels)} must equal nu={nu}.")
+
+    labels = urgency_labels or [f"u = {u}" for u in urgency_levels]
+    if len(labels) != nu:
+        raise ValueError(f"urgency_labels length must equal nu={nu}.")
+
+    fig, axes = plt.subplots(2, nu, figsize=(4 * nu, 8), sharex="col")
+    if nu == 1:
+        axes = np.array([axes])
+    axes_policy = axes[0]
+    axes_dist = axes[1]
+
+    karma_edges = np.arange(nk + 1) - 0.5
+    karma_centers = np.arange(nk)
+    max_karma = nk - 1
+
+    for u_idx in range(nu):
+        ax_p = axes_policy[u_idx] if nu > 1 else axes_policy
+        ax_d = axes_dist[u_idx] if nu > 1 else axes_dist
+
+        # --- Policy heatmap (Bid vs Karma) ---
+        # Build matrix: rows = bid b, cols = karma k. Valid only for b <= k.
+        policy_mat = np.full((nk, nk), np.nan, dtype=float)
+        for k in range(nk):
+            for b in range(k + 1):
+                policy_mat[b, k] = pi[u_idx, k, b]
+
+        cmap = plt.get_cmap("Reds")
+        cmap.set_bad(color="#c0c0c0", alpha=0.8)
+        im = ax_p.pcolormesh(
+            karma_edges,
+            karma_edges,
+            policy_mat,
+            cmap=cmap,
+            vmin=0.0,
+            vmax=1.0,
+            shading="flat",
+        )
+        ax_p.set_xlim(-0.5, max_karma + 0.5)
+        ax_p.set_ylim(-0.5, max_karma + 0.5)
+        ax_p.set_aspect("equal")
+        ax_p.set_xlabel("Karma", fontsize=12)
+        ax_p.set_ylabel("Bid", fontsize=12)
+        ax_p.set_title(labels[u_idx], fontsize=13, fontweight="bold")
+        ax_p.grid(True, alpha=0.3)
+        ax_p.set_xticks(karma_centers[:: max(1, nk // 10)])
+        ax_p.set_yticks(karma_centers[:: max(1, nk // 10)])
+
+        # --- Distribution bar chart ---
+        dist_vals = d[u_idx, :]
+        ax_d.bar(
+            karma_centers,
+            dist_vals,
+            width=0.8,
+            color="#1f77b4",
+            alpha=0.8,
+            edgecolor="#2f2f2f",
+            linewidth=1.0,
+        )
+        ax_d.set_xlim(-0.5, max_karma + 0.5)
+        ax_d.set_ylabel("Distribution", fontsize=12)
+        ax_d.set_xlabel("Karma", fontsize=12)
+        ax_d.grid(True, axis="y", alpha=0.3)
+        ax_d.set_xticks(karma_centers[:: max(1, nk // 10)])
+        tick_positions = karma_centers[:: max(1, nk // 10)]
+        tick_labels = [str(int(x)) for x in tick_positions]
+        if len(tick_positions) > 0 and tick_positions[-1] == max_karma and max_karma >= 10:
+            tick_labels[-1] = f"≥{max_karma}"
+        ax_d.set_xticklabels(tick_labels)
+
+    # Shared y-axis labels for rows
+    fig.text(0.02, 0.75, "Bid", fontsize=13, va="center", rotation="vertical")
+    fig.text(0.02, 0.25, "Distribution", fontsize=13, va="center", rotation="vertical")
+    plt.tight_layout(rect=[0.03, 0, 1, 1])
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+
 def plot_metrics_table(
     row_labels: list[str],
     column_labels: list[str],

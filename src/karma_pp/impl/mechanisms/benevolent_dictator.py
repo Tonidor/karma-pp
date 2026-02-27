@@ -23,13 +23,6 @@ class DictatorReport[OUTCOME, DECISION]:
     selected_outcomes: dict[int, OUTCOME]  # agent_id -> outcome (populated by get_resolutions)
 
 
-@dataclass(frozen=True)
-class DictatorResolution[OUTCOME, DECISION](Resolution[OUTCOME]):
-    """Per-agent view of dictator decision and candidate outcome scores."""
-
-    outcome_scores: list[float]
-
-
 class BenevolentDictatorMechanism[OUTCOME, DECISION](
     Mechanism[
         OUTCOME,                             # OUTCOME
@@ -38,7 +31,7 @@ class BenevolentDictatorMechanism[OUTCOME, DECISION](
         BenevolentDictatorDynamics,          # MECHANISM_DYNAMICS
         Observation,                         # MECHANISM_OBSERVATION
         DictatorReport[OUTCOME, DECISION],   # REPORT
-        DictatorResolution[OUTCOME, DECISION],  # RESOLUTION
+        Resolution[OUTCOME],  # RESOLUTION
         CollectiveAction[OUTCOME, DECISION], # COLLECTIVE_ACTION
     ]
 ):
@@ -110,33 +103,16 @@ class BenevolentDictatorMechanism[OUTCOME, DECISION](
         mechanism_state: BenevolentDictatorState,
         collective_action: CollectiveAction[OUTCOME, DECISION],
         report: DictatorReport[OUTCOME, DECISION],
-    ) -> dict[int, DictatorResolution[OUTCOME, DECISION]]:
-        del mechanism_state
+    ) -> dict[int, Resolution[OUTCOME]]:
+        del mechanism_state, collective_action
 
-        collective_rewards = np.asarray(collective_action.signals, dtype=np.float64)  # (N, D)
-        decisions_to_outcomes = collective_action.decisions_to_outcomes
-        agent_ids = collective_action.agent_ids
-        n_agents = len(agent_ids)
-        total_reward = np.sum(collective_rewards, axis=0) if collective_rewards.size else np.array([])
-
-        agent_outcomes = collective_action.agent_outcomes
-        resolutions: dict[int, DictatorResolution[OUTCOME, DECISION]] = {}
-        for row_idx, agent_id in enumerate(agent_ids):
-            if decisions_to_outcomes and total_reward.size > 0:
-                n_outcomes = len(agent_outcomes[row_idx])
-                scores = np.full(n_outcomes, -np.inf, dtype=float)
-                for d in range(len(decisions_to_outcomes)):
-                    outcome_idx = decisions_to_outcomes[d][row_idx]
-                    scores[outcome_idx] = max(scores[outcome_idx], float(total_reward[d]))
-                outcome_scores = scores.tolist()
-            else:
-                outcome_scores = []
-
+        agent_ids = list(report.selected_outcomes.keys())
+        resolutions: dict[int, Resolution[OUTCOME]] = {}
+        for agent_id in agent_ids:
             selected_outcome = report.selected_outcomes[agent_id]
-            resolutions[agent_id] = DictatorResolution(
+            resolutions[agent_id] = Resolution(
                 agent_id=agent_id,
                 selected_outcome=selected_outcome,
-                outcome_scores=outcome_scores,
             )
         return resolutions
 

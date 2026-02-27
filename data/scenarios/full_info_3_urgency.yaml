@@ -1,0 +1,25 @@
+# Full-info learning agent with 3 urgency levels: u=1 default, u=1 intermediate, u=10 urgent
+# Use with: kpp vis full_info_policy_distribution --scenario data/scenarios/full_info_3_urgency.yaml
+world_file: ../worlds/1_resource_world.yaml
+mechanism_file: ../mechanisms/karma_mechanism.yaml
+population:
+  full_info:
+    n_agents: 2
+    weight: 1.0
+    agent_model:
+      code: karma_pp.impl.agents.full_info_learning_agent.FullInfoLearningAgent
+      parameters:
+        transition_matrix:
+          - [0.7, 0.2, 0.1]   # from u=1 default: mostly stay, some to intermediate, rare urgent
+          - [0.2, 0.6, 0.2]   # from u=1 intermediate
+          - [0.1, 0.2, 0.7]   # from u=10 urgent: mostly stay urgent
+        urgency_levels: [1, 1, 10]
+        initial_urgency: 1
+        reward_per_resource: [0.0]
+        no_resource_penalty: [-1.0]
+        gamma: 0.99
+        eta: 0.01
+        lam: 10.0
+        dt: 0.1
+        vi_tol: 1.0e-6
+        vi_max_iter: 1000

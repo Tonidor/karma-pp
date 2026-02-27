@@ -20,9 +20,11 @@ from karma_pp.utils.system_measures import (
     get_efficiency,
     nash_welfare,
 )
+from karma_pp.impl.agents.full_info_learning_agent import FullInfoLearningAgent
 from karma_pp.utils.plots import (
     plot_access_fairness_vs_efficiency,
     plot_efficiency_fairness_comparison,
+    plot_full_info_policy_and_distribution,
     plot_markov_stationary_violin,
     plot_metrics_table,
     plot_nash_welfare,
@@ -375,6 +377,7 @@ def _run_efficiency_fairness_comparison(
         "nash_welfare",
         "reward_over_time",
         "efficiency_fairness_comparison",
+        "full_info_policy_distribution",
         "markov_urgency_metrics",
         "markov_urgency_violin",
         "metrics_table",
@@ -600,6 +603,57 @@ def vis(
             save_path=save_path,
         )
         log.info("metrics_table_saved", path=save_path)
+        return
+
+    if plot_name == "full_info_policy_distribution":
+        if not scenarios:
+            raise click.ClickException(
+                "full_info_policy_distribution requires one --scenario with a FullInfoLearningAgent."
+            )
+        agent_type_key = agent_type_key or "full_info"
+        scenario = scenarios[0]
+        log.info("full_info_plot_start", scenario=scenario, steps=steps, seed=seed)
+        world_cfg, population_cfg, mechanism_cfg = _load_scenario_cfgs(scenario)
+        agent_type_cfgs = population_cfg["parameters"]["agent_type_cfgs"]
+        if agent_type_key not in agent_type_cfgs:
+            raise click.ClickException(
+                f"Agent type {agent_type_key!r} not found in scenario. "
+                f"Available keys: {list(agent_type_cfgs.keys())}."
+            )
+        population_params = population_cfg["parameters"]["agent_type_cfgs"]
+        world, mechanism, population = create_components(world_cfg, mechanism_cfg, population_params)
+        results = run_simulation(world, population, mechanism, steps, seed)
+        model = population.model_registry[agent_type_key]
+        if not isinstance(model, FullInfoLearningAgent):
+            raise click.ClickException(
+                f"Agent type {agent_type_key!r} is not a FullInfoLearningAgent. "
+                "Use --agent-type-key to specify the full_info agent type."
+            )
+        if model.pi is None or model.d is None:
+            raise click.ClickException(
+                "FullInfoLearningAgent has no learned policy (pi/d). "
+                "Ensure the simulation ran for at least one step."
+            )
+        urgency_levels = list(model.urgency_levels)
+        # Default labels: "u = 1 default", "u = 1 intermediate", "u = 10 urgent" when [1,1,10]
+        if len(urgency_levels) == 3 and urgency_levels[0] == urgency_levels[1] < urgency_levels[2]:
+            urgency_labels = [
+                f"u = {urgency_levels[0]} default",
+                f"u = {urgency_levels[1]} intermediate",
+                f"u = {urgency_levels[2]} urgent",
+            ]
+        else:
+            urgency_labels = [f"u = {u}" for u in urgency_levels]
+        Path("data/plots").mkdir(parents=True, exist_ok=True)
+        save_path = out_path or "data/plots/full_info_policy_distribution.png"
+        plot_full_info_policy_and_distribution(
+            pi=model.pi,
+            d=model.d,
+            urgency_levels=urgency_levels,
+            urgency_labels=urgency_labels,
+            save_path=save_path,
+        )
+        log.info("full_info_plot_saved", path=save_path)
         return
 
     if plot_name in ("access_fairness_vs_efficiency", "nash_welfare", "reward_over_time", "markov_urgency_metrics", "markov_urgency_violin"):

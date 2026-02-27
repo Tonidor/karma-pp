@@ -243,9 +243,9 @@ class TestResourceAgentUrgencyTransition:
         assert state.private == 0
 
     def test_urgency_stays_in_valid_levels(self):
-        from karma_pp.impl.mechanisms.benevolent_dictator import DictatorResolution
+        from karma_pp.core.types import Resolution
         state = self.agent.initialize(_world_dynamics(), None, _make_rng())
-        res = DictatorResolution(agent_id=0, selected_outcome=(False,), outcome_scores=[])
+        res = Resolution(agent_id=0, selected_outcome=(False,))
         obs = ResourceAgentObservation(resource_capacities=[1])
         rng = _make_rng(99)
         for _ in range(200):
