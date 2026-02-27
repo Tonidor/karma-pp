@@ -45,20 +45,22 @@ class KarmaResolution[OUTCOME, DECISION](Resolution[OUTCOME]):
 
 @runtime_checkable
 class SelectionRule(Protocol):
-    """Map collective signals to probability distribution over decisions."""
+    """Map collective signals to a sampled decision index."""
 
     def __call__(
         self,
         collective_commits: list[list[int]],
-    ) -> list[float]:
-        """Return probability distribution over decisions.
+        rng: np.random.Generator,
+    ) -> int:
+        """Sample and return the index of the selected decision.
 
         Args:
-            collective_commits: Collective signal matrix, shape (N_agents, N_decisions).
+            collective_commits: Signal matrix, shape (N_agents, N_decisions).
                 collective_commits[agent_row][d] = agent's signal for decision d.
+            rng: Random number generator for tie-breaking / stochastic selection.
 
         Returns:
-            Probability distribution over decisions, length N_decisions.
+            Index of the selected decision in [0, N_decisions).
         """
         ...
 
@@ -87,22 +89,23 @@ class SelectionRule(Protocol):
 
 @runtime_checkable
 class RedistributionRule(Protocol):
-    """Map collective commits and agent weights to transfers and probabilities."""
+    """Map collective commits and agent weights to a sampled transfer vector."""
 
     def __call__(
         self,
         selected_commits: list[int],
         agent_weights: list[int],
-    ) -> tuple[list[list[int]], list[float]]:
-        """Return transfer vector and probabilities.
+        rng: np.random.Generator,
+    ) -> list[int]:
+        """Sample and return a net transfer vector.
 
         Args:
             selected_commits: The commits for the selected decision (N_agents,).
             agent_weights: The weights of the agents (N_agents,).
+            rng: Random number generator for stochastic remainder allocation.
 
         Returns:
-            The transfer vectors for the agents (N_transfer_vectors, N_agents).
-            The probabilities of the transfer vectors (N_transfer_vectors,).
+            Net transfer for each agent (N_agents,), summing to 0.
         """
         ...
 
@@ -241,8 +244,7 @@ class KarmaMechanism[OUTCOME, DECISION](
                 raise ValueError("Commits must be between 0 and the agent's balance.")
 
         # Select decision
-        probs = self.selection_rule(commits)
-        selected_idx = int(rng.choice(len(probs), p=probs))
+        selected_idx = self.selection_rule(commits, rng)
         collective_decision: DECISION = decisions[selected_idx]
 
         # Transfers for selected decision: one signal per agent (column selected_idx).
@@ -252,13 +254,7 @@ class KarmaMechanism[OUTCOME, DECISION](
             int(self._agent_weights.get(agent_id, 1))
             for agent_id in agent_ids
         ]
-        possible_transfers, transfer_probs = self.redistribution_rule(
-            commits_selected,
-            agent_weights_list,
-        )
-        transfer_list = possible_transfers[
-            int(rng.choice(len(possible_transfers), p=transfer_probs))
-        ]
+        transfer_list = self.redistribution_rule(commits_selected, agent_weights_list, rng)
         transfers = {agent_id: transfer_list[row_idx] for row_idx, agent_id in enumerate(agent_ids)}
 
         # Selected outcome per agent based on selected decision

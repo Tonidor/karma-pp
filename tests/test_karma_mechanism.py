@@ -124,62 +124,60 @@ class TestKarmaMechanismRun:
 class TestMaxSumSelectionRule:
     def setup_method(self):
         self.rule = MaxSumSelectionRule()
+        self.rng = np.random.default_rng(0)
 
     def test_selects_max_total_commit(self):
         commits = [[0, 5], [0, 5]]  # decision 1 has total 10, decision 0 has 0
-        probs = self.rule(commits)
-        assert len(probs) == 2
-        assert probs[1] > probs[0]
-        assert abs(probs[1] - 1.0) < 1e-9
+        idx = self.rule(commits, self.rng)
+        assert idx == 1
 
-    def test_uniform_on_tie(self):
-        commits = [[3, 3], [3, 3]]  # equal totals
-        probs = self.rule(commits)
-        assert abs(probs[0] - 0.5) < 1e-9
-        assert abs(probs[1] - 0.5) < 1e-9
+    def test_tie_returns_valid_index(self):
+        commits = [[3, 3], [3, 3]]  # equal totals — either index is valid
+        idx = self.rule(commits, self.rng)
+        assert idx in (0, 1)
 
-    def test_output_is_valid_probability_distribution(self):
-        for _ in range(10):
+    def test_tie_is_uniform_over_many_draws(self):
+        commits = [[3, 3], [3, 3]]
+        rng = np.random.default_rng(42)
+        counts = [0, 0]
+        for _ in range(1000):
+            counts[self.rule(commits, rng)] += 1
+        # Each decision should be chosen ~50% of the time (allow ±5%)
+        assert abs(counts[0] / 1000 - 0.5) < 0.05
+
+    def test_returns_valid_index(self):
+        for s in range(10):
             commits = [
                 [int(np.random.default_rng(s).integers(0, 5)) for _ in range(3)]
-                for s in range(4)
+                for _ in range(4)
             ]
-            probs = self.rule(commits)
-            assert abs(sum(probs) - 1.0) < 1e-9
-            assert all(p >= 0 for p in probs)
+            idx = self.rule(commits, np.random.default_rng(s))
+            assert 0 <= idx < 3
 
 
 class TestProportionalRedistributionRule:
     def setup_method(self):
         self.rule = ProportionalRedistributionRule()
+        self.rng = np.random.default_rng(0)
 
     def test_transfers_are_zero_sum(self):
-        transfers, probs = self.rule([2, 3, 1], [1, 1, 1])
-        for transfer_vec in transfers:
-            assert sum(transfer_vec) == 0, f"Transfer not zero-sum: {transfer_vec}"
-
-    def test_probabilities_sum_to_one(self):
-        _, probs = self.rule([2, 3, 1], [1, 1, 1])
-        assert abs(sum(probs) - 1.0) < 1e-9
+        transfer = self.rule([2, 3, 1], [1, 1, 1], self.rng)
+        assert sum(transfer) == 0, f"Transfer not zero-sum: {transfer}"
 
     def test_no_agent_pays_more_than_committed(self):
         commits = [2, 3, 1]
-        transfers, _ = self.rule(commits, [1, 1, 1])
-        for transfer_vec in transfers:
-            for i, t in enumerate(transfer_vec):
-                assert t >= -commits[i], f"Agent {i} pays more than committed"
+        transfer = self.rule(commits, [1, 1, 1], self.rng)
+        for i, t in enumerate(transfer):
+            assert t >= -commits[i], f"Agent {i} pays more than committed"
 
     def test_single_agent(self):
-        transfers, probs = self.rule([5], [1])
-        assert len(transfers) == 1
-        assert transfers[0][0] == 0  # single agent: transfer is 0 (net)
-        assert abs(probs[0] - 1.0) < 1e-9
+        transfer = self.rule([5], [1], self.rng)
+        assert transfer[0] == 0  # single agent: net transfer is 0
 
     def test_all_zero_commits(self):
-        transfers, probs = self.rule([0, 0], [1, 1])
-        assert all(t == 0 for t in transfers[0])
-        assert abs(sum(probs) - 1.0) < 1e-9
+        transfer = self.rule([0, 0], [1, 1], self.rng)
+        assert all(t == 0 for t in transfer)
 
     def test_raises_on_empty_weights(self):
         with pytest.raises(ValueError, match="non-empty"):
-            self.rule([], [])
+            self.rule([], [], self.rng)

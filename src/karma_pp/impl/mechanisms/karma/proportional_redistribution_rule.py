@@ -1,5 +1,3 @@
-from itertools import combinations_with_replacement
-
 import numpy as np
 import structlog
 
@@ -15,16 +13,22 @@ class ProportionalRedistributionRule(RedistributionRule):
         self,
         collective_commits: list[int],
         agent_weights: list[int],
-    ) -> tuple[list[list[int]], list[float]]:
-        """Return all possible proportional redistributions of commits + remainder.
-        
+        rng: np.random.Generator,
+    ) -> list[int]:
+        """Sample and return a proportional net transfer vector.
+
+        Each agent receives floor(pool / total_weight) * w_i karma. The
+        remainder pool % total_weight tokens are distributed via slot-expansion
+        sampling: each agent i contributes w_i slots; remainder slots are drawn
+        uniformly without replacement.
+
         Args:
-            collective_commits: Commitment from each agent
-            agent_weights: Weight of each agent
-            
+            collective_commits: Commitment from each agent for the selected decision.
+            agent_weights: Weight of each agent.
+            rng: Random number generator for remainder allocation.
+
         Returns:
-            tuple: (transfer_vectors, probabilities) where probabilities are weighted
-                   by agent weights for remainder distribution
+            Net transfer for each agent, summing to 0.
         """
         n_agents = len(agent_weights)
         if n_agents == 0:
@@ -32,131 +36,38 @@ class ProportionalRedistributionRule(RedistributionRule):
         if any(weight <= 0 for weight in agent_weights):
             raise ValueError("agent_weights must be strictly positive.")
 
-        agent_weights_arr = np.asarray(agent_weights, dtype=np.int64)
-        total_weight = int(agent_weights_arr.sum())
-
-        collective_commits_arr = np.asarray(collective_commits, dtype=np.int64)
-        if collective_commits_arr.ndim != 1 or collective_commits_arr.shape[0] != n_agents:
+        weights = np.asarray(agent_weights, dtype=np.int64)
+        commits = np.asarray(collective_commits, dtype=np.int64)
+        if commits.shape[0] != n_agents:
             raise ValueError(
                 f"Collective commits length {len(collective_commits)} != n_agents {n_agents}"
             )
 
-        # Calculate base distribution
-        total_commits = int(collective_commits_arr.sum())
-        equal_share = int(total_commits // total_weight)
-        remainder = int(total_commits % total_weight)
-        base_transfers_arr = equal_share * agent_weights_arr
+        total_weight = int(weights.sum())
+        total_commits = int(commits.sum())
+        base_per_weight = total_commits // total_weight
+        remainder = total_commits % total_weight
 
-        # Generate all valid remainder distributions
-        transfers, probs = self._generate_remainder_distributions(
-            base_transfers_arr,
-            collective_commits_arr,
-            agent_weights_arr,
-            remainder,
-        )
+        # Base: each agent gets base_per_weight * w_i karma back.
+        base = base_per_weight * weights
 
-        # Validate outputs
-        self._validate_outputs(collective_commits_arr, transfers, probs, n_agents)
+        # Remainder: sample without replacement from the slot pool.
+        # Slot pool: agent i appears w_i times → probability proportional to w_i.
+        extra = np.zeros(n_agents, dtype=np.int64)
+        if remainder > 0:
+            slots = np.repeat(np.arange(n_agents), weights)
+            chosen = rng.choice(len(slots), size=remainder, replace=False)
+            chosen_agents, counts = np.unique(slots[chosen], return_counts=True)
+            extra[chosen_agents] = counts
 
+        net = base + extra - commits
         log.info(
             "proportional_redistribution",
-            selected_decision_agent_commits=collective_commits_arr.tolist(),
-            transfer_options=transfers,
-            transfer_probs=probs,
+            commits=commits.tolist(),
+            net_transfer=net.tolist(),
         )
-        return transfers, probs
-
-    def _generate_remainder_distributions(
-        self,
-        base_transfers: np.ndarray,
-        collective_commits: np.ndarray,
-        agent_weights: np.ndarray,
-        remainder: int,
-    ) -> tuple[list[list[int]], list[float]]:
-        """Generate all valid ways to distribute remainder tokens.
-        
-        Args:
-            base_transfers: Base transfer amounts (equal share × weight)
-            collective_commits: Original commitments
-            agent_weights: Agent weights (max extra tokens per agent)
-            remainder: Number of remainder tokens to distribute
-            
-        Returns:
-            tuple: (transfers array, probabilities array)
-        """
-        if remainder == 0:
-            # No remainder: single deterministic solution
-            net_transfer = (base_transfers - collective_commits).astype(np.int64, copy=False)
-            return [net_transfer.tolist()], [1.0]
-
-        # Enumerate all ways to distribute remainder tokens
-        # Constraint: agent i can receive at most agent_weights[i] extra tokens
-        
-        transfers_list: list[list[int]] = []
-        probs_list: list[float] = []
-        n_agents = int(agent_weights.shape[0])
-
-        for combo in combinations_with_replacement(range(n_agents), remainder):
-            # Count extra tokens for each agent
-            extra_tokens = np.zeros(n_agents, dtype=np.int64)
-            for agent_idx in combo:
-                extra_tokens[agent_idx] += 1
-            
-            # Check weight constraint
-            if np.any(extra_tokens > agent_weights):
-                continue  # Invalid: exceeds agent capacity
-            
-            # Compute net transfer
-            net_transfer = (base_transfers + extra_tokens - collective_commits).astype(np.int64, copy=False)
-            transfers_list.append(net_transfer.tolist())
-            
-            # Probability proportional to product of weights
-            combo_weights = agent_weights[list(combo)]
-            probs_list.append(float(np.prod(combo_weights, dtype=np.float64)))
-
-        # Normalize probabilities
-        if not transfers_list:
-            raise ValueError("No valid remainder redistribution found for given weights.")
-        probs_arr = np.asarray(probs_list, dtype=np.float64)
-        probs_sum = float(probs_arr.sum())
-        if probs_sum <= 0.0:
-            raise ValueError("Redistribution probabilities must have positive mass.")
-        probs_arr /= probs_sum
-        probs = probs_arr.tolist()
-
-        return transfers_list, probs
-
-    def _validate_outputs(
-        self,
-        collective_commits: np.ndarray,
-        transfers: list[list[int]],
-        probs: list[float],
-        n_agents: int,
-    ) -> None:
-        """Validate transfer vectors and probabilities."""
-        transfers_arr = np.asarray(transfers, dtype=np.int64)
-        probs_arr = np.asarray(probs, dtype=np.float64)
-
-        # Check dimensions
-        if transfers_arr.ndim != 2 or transfers_arr.shape[1] != n_agents:
-            raise ValueError(
-                "Transfer vector length mismatch with n_agents"
-            )
-        
-        # Check zero-sum property
-        if not np.all(np.sum(transfers_arr, axis=1) == 0):
-            raise ValueError("Transfers do not sum to 0 for at least one outcome.")
-        
-        # Check probability distribution
-        if not np.isclose(probs_arr.sum(), 1.0):
-            raise ValueError(
-                f"Probs do not sum to 1.0: {probs_arr.sum()} != 1.0"
-            )
-
-        # Check that no agent pays more than their commitment
-        min_allowed = -collective_commits.reshape(1, n_agents)
-        if np.any(transfers_arr < min_allowed):
-            raise ValueError("At least one agent pays more than their commitment.")
+        assert int(net.sum()) == 0, f"Transfer not zero-sum: {net.tolist()}"
+        return net.tolist()
 
     def compute_kappa(
         self,

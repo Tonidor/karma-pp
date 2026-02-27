@@ -7,23 +7,32 @@ log = structlog.get_logger(__name__)
 
 
 class WinnersPayRedistributionRule(RedistributionRule):
-    """Redistribution rule where winners pay their full bid and receive nothing."""
+    """Redistribution rule where winners pay their full bid and receive nothing.
+
+    Winners are agents with a non-zero commit for the selected decision. The 
+    collected pool is distributed exclusively among the losers, weighted by their 
+    agent weights.
+    """
 
     def __call__(
         self,
         collective_commits: list[int],
         agent_weights: list[int],
-    ) -> tuple[list[list[int]], list[float]]:
-        """Return transfer vectors where only losers receive karma.
+        rng: np.random.Generator,
+    ) -> list[int]:
+        """Sample and return a net transfer vector where only losers receive karma.
+
+        The pool (sum of winner commits) is distributed among losers proportional
+        to their weights: each loser i gets floor(pool / total_loser_weight) * w_i
+        plus up to one extra token via slot-expansion sampling for the remainder.
 
         Args:
-            collective_commits: Commitment from each agent for the selected
-                decision.
-            agent_weights: Weight of each agent used for redistribution.
+            collective_commits: Commitment from each agent for the selected decision.
+            agent_weights: Weight of each agent.
+            rng: Random number generator for remainder allocation.
 
         Returns:
-            (transfer_vectors, probabilities): transfer_vectors[i] is a list of
-            integer net transfers for each agent summing to 0.
+            Net transfer for each agent, summing to 0.
         """
         n_agents = len(collective_commits)
         if n_agents == 0:
@@ -34,74 +43,43 @@ class WinnersPayRedistributionRule(RedistributionRule):
         commits = np.asarray(collective_commits, dtype=np.int64)
         weights = np.asarray(agent_weights, dtype=np.int64)
 
-        max_commit = int(commits.max())
-        if max_commit == 0:
-            # No one bid anything — no karma moves.
-            transfer = np.zeros(n_agents, dtype=np.int64).tolist()
-            log.info("winners_pay_redistribution", pool=0, transfer=transfer)
-            return [transfer], [1.0]
+        if int(commits.max()) == 0:
+            log.info("winners_pay_redistribution", pool=0)
+            return np.zeros(n_agents, dtype=np.int64).tolist()
 
-        # Identify winners (non-zero bidders) and losers.
+        # Winners: non-zero bidders; losers: zero bidders.
         is_winner = commits > 0
         is_loser = ~is_winner
-        n_losers = int(is_loser.sum())
-
         pool = int(commits[is_winner].sum())
 
-        # Base share per loser weighted by their weights (all agents may be losers).
-        loser_weights = weights[is_loser]
+        loser_indices = np.where(is_loser)[0]
+        loser_weights = weights[loser_indices]
         total_loser_weight = int(loser_weights.sum())
+
+        # Base: each loser i gets floor(pool / total_loser_weight) * w_i karma.
         base_share = pool // total_loser_weight
-        base_transfers = np.zeros(n_agents, dtype=np.int64)
-        base_transfers[is_loser] = base_share * loser_weights
         remainder = pool % total_loser_weight
 
-        if remainder == 0:
-            transfer = (base_transfers - commits).tolist()
-            log.info("winners_pay_redistribution", pool=pool, transfer=transfer)
-            return [transfer], [1.0]
+        base_transfers = np.zeros(n_agents, dtype=np.int64)
+        base_transfers[loser_indices] = base_share * loser_weights
 
-        # Distribute remainder tokens to losers weighted by their weights.
-        loser_indices = np.where(is_loser)[0]
+        # Remainder: slot-expansion sampling among losers only.
+        extra = np.zeros(n_agents, dtype=np.int64)
+        if remainder > 0:
+            slots = np.repeat(loser_indices, loser_weights)
+            chosen = rng.choice(len(slots), size=remainder, replace=False)
+            chosen_agents, counts = np.unique(slots[chosen], return_counts=True)
+            extra[chosen_agents] = counts
 
-        transfers_list: list[list[int]] = []
-        probs_list: list[float] = []
-
-        # Enumerate all ways to assign `remainder` extra tokens among losers.
-        from itertools import combinations_with_replacement
-
-        for combo in combinations_with_replacement(range(len(loser_indices)), remainder):
-            extra_for_losers = np.zeros(len(loser_indices), dtype=np.int64)
-            for idx in combo:
-                extra_for_losers[idx] += 1
-
-            # Each loser can receive at most 1 extra token (weight=1 agents).
-            # Generalised: at most agent_weight[i] extra tokens.
-            if np.any(extra_for_losers > loser_weights):
-                continue
-
-            loser_extra = np.zeros(n_agents, dtype=np.int64)
-            loser_extra[loser_indices] = extra_for_losers
-
-            net = -commits + base_transfers + loser_extra
-            transfers_list.append(net.tolist())
-
-            combo_weights = loser_weights[list(combo)]
-            probs_list.append(float(np.prod(combo_weights, dtype=np.float64)))
-
-        if not transfers_list:
-            raise ValueError("No valid remainder redistribution found.")
-
-        probs_arr = np.asarray(probs_list, dtype=np.float64)
-        probs_arr /= probs_arr.sum()
-
+        net = base_transfers + extra - commits
         log.info(
             "winners_pay_redistribution",
+            commits=commits.tolist(),
             pool=pool,
-            n_losers=n_losers,
-            n_options=len(transfers_list),
+            net_transfer=net.tolist(),
         )
-        return transfers_list, probs_arr.tolist()
+        assert int(net.sum()) == 0, f"Transfer not zero-sum: {net.tolist()}"
+        return net.tolist()
 
     def compute_kappa(
         self,
