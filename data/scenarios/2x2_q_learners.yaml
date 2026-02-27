@@ -10,12 +10,12 @@ population:
         transition_matrix:
           - [0.8, 0.2]
           - [0.2, 0.8]
-        urgency_levels: [0, 1]
-        initial_urgency: 0
+        urgency_levels: [1, 3]
+        initial_urgency: 1
         reward_per_resource: [0.0]
         no_resource_penalty: [-1.0]
         alpha: 0.2
         epsilon: 0.5
         gamma: 0.99
         epsilon_min: 0.05
-        epsilon_decay: 0.9995
+        epsilon_decay: 0.9985

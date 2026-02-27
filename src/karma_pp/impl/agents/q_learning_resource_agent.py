@@ -142,7 +142,9 @@ class QLearningResourceAgent(
         timestep: int,
         rng: np.random.Generator,
     ) -> AgentState[int, QLearningPolicyState]:
-        del resolution, timestep, rng
+        del resolution, rng
+        if timestep == -1:
+            return AgentState(private=previous.private, policy=previous.policy)
         policy = previous.policy
         new_policy = QLearningPolicyState(
             Q=dict(policy.Q),

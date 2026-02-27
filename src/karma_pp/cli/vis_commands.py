@@ -223,12 +223,14 @@ def _compute_markov_metrics(
 
 def _load_scenario_cfgs(scenario: str) -> tuple[dict, dict, dict]:
     """Load world, population, and mechanism configs directly from a scenario YAML."""
-    with open(scenario, "r") as f:
+    scenario_path = Path(scenario)
+    with open(scenario_path, "r") as f:
         scenario_cfg = yaml.safe_load(f)
 
-    with open(scenario_cfg["world_file"], "r") as f:
+    scenario_dir = scenario_path.parent
+    with open(scenario_dir / scenario_cfg["world_file"], "r") as f:
         world_cfg = yaml.safe_load(f)
-    with open(scenario_cfg["mechanism_file"], "r") as f:
+    with open(scenario_dir / scenario_cfg["mechanism_file"], "r") as f:
         mechanism_cfg = yaml.safe_load(f)
 
     population_cfg = {
@@ -264,6 +266,13 @@ def _mean_efficiency_and_fairness(
     return float(np.mean(effs)), float(np.mean(fairs))
 
 
+def _parse_gamma_sweep(gamma_sweep: str | None) -> list[float]:
+    """Parse comma-separated gamma values into list of floats."""
+    if not gamma_sweep or not gamma_sweep.strip():
+        return []
+    return [float(x.strip()) for x in gamma_sweep.split(",") if x.strip()]
+
+
 def _run_efficiency_fairness_comparison(
     random_scenario: str,
     q_learner_scenario: str,
@@ -273,6 +282,7 @@ def _run_efficiency_fairness_comparison(
     n_runs: int,
     seed_base: int,
     save_path: str,
+    gamma_values: list[float] | None = None,
 ) -> None:
     """Run random, optimal, dictator, and Q variants; plot mean efficiency vs fairness."""
     world_cfg, random_pop_cfg, mechanism_cfg = _load_scenario_cfgs(random_scenario)
@@ -325,7 +335,8 @@ def _run_efficiency_fairness_comparison(
 
     q_world_cfg, q_pop_base, q_mechanism_cfg = _load_scenario_cfgs(q_learner_scenario)
 
-    for gamma_idx, gamma in enumerate(_COMPARE_GAMMAS):
+    gammas = gamma_values if gamma_values else _COMPARE_GAMMAS
+    for gamma_idx, gamma in enumerate(gammas):
         population_cfg = copy.deepcopy(q_pop_base)
         try:
             population_cfg["parameters"]["agent_type_cfgs"]["q_learner"]["agent_model"]["parameters"]["gamma"] = gamma
@@ -399,6 +410,20 @@ def _run_efficiency_fairness_comparison(
     help="For markov_urgency_metrics/markov_urgency_violin: optional lambda* override.",
 )
 @click.option(
+    "--gamma-sweep",
+    type=str,
+    default=None,
+    help="Comma-separated gamma values for parameter sweep (e.g. '0.1,0.5,0.9,0.99'). "
+    "For access_fairness_vs_efficiency: requires exactly one scenario. "
+    "For efficiency_fairness_comparison: replaces default Q-learner gamma sweep.",
+)
+@click.option(
+    "--agent-type-key",
+    type=str,
+    default=None,
+    help="Agent type key in scenario population (e.g. 'full_info', 'q_learner') when using --gamma-sweep.",
+)
+@click.option(
     "--out",
     "out_path",
     type=click.Path(),
@@ -421,6 +446,8 @@ def vis(
     seed_base: int,
     delta_r: float,
     lambda_star: float | None,
+    gamma_sweep: str | None,
+    agent_type_key: str | None,
     out_path: str | None,
     log_level: str,
 ):
@@ -434,6 +461,7 @@ def vis(
             )
         random_scenario, optimal_scenario, dictator_scenario, q_learner_scenario = scenarios[0], scenarios[1], scenarios[2], scenarios[3]
         save_path = out_path or "data/plots/efficiency_fairness_comparison.png"
+        gamma_vals = _parse_gamma_sweep(gamma_sweep) if gamma_sweep else None
         _run_efficiency_fairness_comparison(
             random_scenario=random_scenario,
             q_learner_scenario=q_learner_scenario,
@@ -443,7 +471,61 @@ def vis(
             n_runs=n_runs,
             seed_base=seed_base,
             save_path=save_path,
+            gamma_values=gamma_vals,
         )
+        return
+
+    if plot_name == "access_fairness_vs_efficiency" and gamma_sweep and agent_type_key:
+        gamma_vals = _parse_gamma_sweep(gamma_sweep)
+        if not gamma_vals:
+            raise click.ClickException("--gamma-sweep must contain at least one value.")
+        if len(scenarios) != 1:
+            raise click.ClickException(
+                "access_fairness_vs_efficiency with --gamma-sweep requires exactly one --scenario."
+            )
+        scenario = scenarios[0]
+        world_cfg, population_cfg, mechanism_cfg = _load_scenario_cfgs(scenario)
+        agent_type_cfgs = population_cfg["parameters"]["agent_type_cfgs"]
+        if agent_type_key not in agent_type_cfgs:
+            raise click.ClickException(
+                f"Agent type {agent_type_key!r} not found in scenario. "
+                f"Available keys: {list(agent_type_cfgs.keys())}."
+            )
+        try:
+            _ = agent_type_cfgs[agent_type_key]["agent_model"]["parameters"]["gamma"]
+        except KeyError as e:
+            raise click.ClickException(
+                f"Agent type {agent_type_key!r} has no gamma parameter: {e}."
+            ) from e
+
+        eff_list: list[float] = []
+        fair_list: list[float] = []
+        labels_list: list[str] = []
+        for gamma_idx, gamma in enumerate(gamma_vals):
+            pop_cfg = copy.deepcopy(population_cfg)
+            pop_cfg["parameters"]["agent_type_cfgs"][agent_type_key]["agent_model"]["parameters"]["gamma"] = gamma
+            log.info("gamma_sweep_run", gamma=gamma, agent_type=agent_type_key, n_runs=n_runs, steps=steps)
+            effs, fairs = [], []
+            for r in range(n_runs):
+                eff, fair = _run_scenario_and_metrics(
+                    world_cfg, pop_cfg, mechanism_cfg, steps, seed_base + gamma_idx * 100 + r
+                )
+                effs.append(eff)
+                fairs.append(fair)
+            eff_list.append(float(np.mean(effs)))
+            fair_list.append(float(np.mean(fairs)))
+            labels_list.append(f"γ={gamma:.2f}")
+
+        Path("data/plots").mkdir(parents=True, exist_ok=True)
+        save_path = out_path or "data/plots/access_fairness_vs_efficiency.png"
+        plot_access_fairness_vs_efficiency(
+            access_fairness=fair_list,
+            efficiency=eff_list,
+            labels=labels_list,
+            save_path=save_path,
+            sweep_values=gamma_vals,
+        )
+        log.info("plot_saved", path=save_path)
         return
 
     if plot_name == "metrics_table":

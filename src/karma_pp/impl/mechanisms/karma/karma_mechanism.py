@@ -62,6 +62,28 @@ class SelectionRule(Protocol):
         """
         ...
 
+    def compute_gamma(
+        self,
+        b: int,
+        v_b: dict[int, float],
+        n_agents: int,
+    ) -> float:
+        """Probability that an ego agent bidding b wins the resource.
+
+        Uses a mean-field approximation: the N-1 opponents each draw their bid
+        i.i.d. from v_b.  Used by FullInfoLearningAgent to compute the outcome
+        probability γ[o|b](d, π) required by Algorithm 1.
+
+        Args:
+            b: Ego agent's bid.
+            v_b: Population-level bid distribution {bid: probability}.
+            n_agents: Total number of agents (including ego).
+
+        Returns:
+            P(ego gets resource | ego bids b).
+        """
+        ...
+
 
 @runtime_checkable
 class RedistributionRule(Protocol):
@@ -81,6 +103,33 @@ class RedistributionRule(Protocol):
         Returns:
             The transfer vectors for the agents (N_transfer_vectors, N_agents).
             The probabilities of the transfer vectors (N_transfer_vectors,).
+        """
+        ...
+
+    def compute_kappa(
+        self,
+        k: int,
+        b: int,
+        v_b: dict[int, float],
+        n_agents: int,
+        gamma_b: float = 0.5,
+    ) -> tuple[dict[int, float], dict[int, float]]:
+        """Distributions over next karma balance k' for won and lost outcomes.
+
+        Assumes agents bid 0 for all outcomes except their own winning outcome,
+        so only the winner's bid enters the redistribution pool.  Used by
+        FullInfoLearningAgent to compute κ[k'|k,b,o](d,π) (Algorithm 1).
+
+        Args:
+            k: Ego's current karma balance.
+            b: Ego's bid for the resource outcome.
+            v_b: Population-level bid distribution {bid: probability}.
+                 Used to marginalise over winning bids in the lost case.
+            n_agents: Total number of agents (including ego).
+            gamma_b: P(ego wins | ego bids b).  Required for the lost case.
+
+        Returns:
+            (kappa_won, kappa_lost): each a {k_next: probability} dict.
         """
         ...
 

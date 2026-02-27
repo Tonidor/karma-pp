@@ -6,4 +6,4 @@ parameters:
   redistribution_rule:
     code: karma_pp.impl.mechanisms.karma.proportional_redistribution_rule.ProportionalRedistributionRule
     parameters: {}
-  weight_karma_ratio: 5.0
+  weight_karma_ratio: 3

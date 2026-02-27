@@ -7,28 +7,73 @@ def plot_access_fairness_vs_efficiency(
     efficiency: list[float],
     labels: list[str],
     save_path: str = "data/plots/access_fairness_vs_efficiency.png",
+    sweep_values: list[float] | None = None,
 ) -> None:
-    """Plot efficiency vs access fairness scatter for multiple scenarios."""
+    """Plot efficiency vs access fairness scatter for multiple scenarios.
+
+    When sweep_values is provided, points are connected by a line in order,
+    all use circle markers, and colors vary from blue (low) to yellow (high).
+    """
     sns.set_theme(style="whitegrid")
     sns.set(font_scale=1.5)
     sns.set_context("paper", font_scale=1.5, rc={"lines.linewidth": 2.5})
 
-    colors = ["#1f77b4", "#ff7f0e", "#2ca02c"]
-    markers = ["o", "s", "^"]
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    for i, (eff, fair, label) in enumerate(zip(efficiency, access_fairness, labels)):
-        ax.scatter(
-            eff,
-            fair,
-            c=colors[i % len(colors)],
-            marker=markers[i % len(markers)],
-            s=150,
-            label=label,
-            edgecolors="black",
-            linewidths=1.5,
-            alpha=0.8,
+    if sweep_values is not None and len(sweep_values) == len(efficiency):
+        # Parameter sweep: line + circles, blue-to-yellow colormap
+        sweep_arr = np.asarray(sweep_values)
+        eff_arr = np.asarray(efficiency)
+        fair_arr = np.asarray(access_fairness)
+        order = np.argsort(sweep_arr)
+        eff_ordered = eff_arr[order]
+        fair_ordered = fair_arr[order]
+        sweep_ordered = sweep_arr[order]
+        labels_ordered = [labels[i] for i in order]
+
+        cmap = plt.get_cmap("YlGnBu_r")  # blue (low) -> yellow (high)
+        norm = plt.Normalize(vmin=sweep_ordered.min(), vmax=sweep_ordered.max())
+        colors = [cmap(norm(v)) for v in sweep_ordered]
+
+        ax.plot(
+            eff_ordered,
+            fair_ordered,
+            color="gray",
+            linestyle="-",
+            linewidth=1.5,
+            alpha=0.7,
+            zorder=0,
         )
+        for i, (eff, fair, label) in enumerate(zip(eff_ordered, fair_ordered, labels_ordered)):
+            ax.scatter(
+                eff,
+                fair,
+                c=[colors[i]],
+                marker="o",
+                s=150,
+                label=label,
+                edgecolors="black",
+                linewidths=1.5,
+                alpha=0.9,
+                zorder=1,
+            )
+    else:
+        # Non-sweep: distinct colors and markers per scenario
+        colors = ["#1f77b4", "#ff7f0e", "#2ca02c"]
+        markers = ["o", "s", "^"]
+        for i, (eff, fair, label) in enumerate(zip(efficiency, access_fairness, labels)):
+            ax.scatter(
+                eff,
+                fair,
+                c=colors[i % len(colors)],
+                marker=markers[i % len(markers)],
+                s=150,
+                label=label,
+                edgecolors="black",
+                linewidths=1.5,
+                alpha=0.8,
+            )
+
     ax.set_xlabel("Efficiency", fontsize=14)
     ax.set_ylabel("Access Fairness", fontsize=14)
     ax.set_title("Efficiency vs. Access Fairness", fontsize=16, fontweight="bold")

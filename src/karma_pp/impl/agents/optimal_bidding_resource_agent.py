@@ -163,7 +163,9 @@ class OptimalBiddingResourceAgent(
         timestep: int,
         rng: np.random.Generator,
     ) -> AgentState[int, OptimalBiddingPolicyState]:
-        del timestep, rng
+        del rng
+        if timestep == -1:
+            return AgentState(private=previous.private, policy=previous.policy)
         old = previous.policy
         balance_next = int(np.clip(observation.agent_balance, 0, old.max_balance))
         last_balance = old.last_balance if old.last_balance is not None else balance_next
