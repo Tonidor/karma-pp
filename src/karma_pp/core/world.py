@@ -23,6 +23,15 @@ class World[
         ...
 
     @abstractmethod
+    def get_collectives(
+        self,
+        world_state: WORLD_STATE,
+        agent_ids: list[int],
+    ) -> dict[int, list[int]]:
+        """Get all possible collectives for the given agent ids."""
+        ...
+
+    @abstractmethod
     def get_observations(
         self,
         agent_ids: list[int],
@@ -35,8 +44,8 @@ class World[
     def filter_actions(
         self,
         world_state: WORLD_STATE,
-        agent_actions: list[list[tuple[OUTCOME, SIGNAL]]],
-        agent_ids: list[int],
+        agent_actions: dict[int, list[tuple[OUTCOME, SIGNAL]]],
+        collective: list[int],
     ) -> COLLECTIVE_ACTION:
         """Filter infeasible joint actions and map to decision space."""
         ...
@@ -45,7 +54,7 @@ class World[
     def update_state(
         self,
         previous: WORLD_STATE | None,
-        report: REPORT | None,
+        reports: dict[int, REPORT | None],  # collective_id -> report
         rng: np.random.Generator,
     ) -> WORLD_STATE:
         """Return world state; initialize when timestep is 0."""

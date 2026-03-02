@@ -35,6 +35,7 @@ class AgentModel[
         world_state: WORLD_STATE,
         mechanism_state: MECHANISM_STATE,
         population_state: PopulationState[PRIVATE_STATE, POLICY_STATE],
+        membership: tuple[int, int],
         rng: np.random.Generator,
     ) -> OBSERVATION:
         """Build the observation for one agent."""

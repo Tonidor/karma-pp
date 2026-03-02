@@ -31,6 +31,11 @@ class PopulationState[AGENT_PRIVATE, POLICY_STATE]:
         """Number of agents in the population."""
         return len(self.agent_states)
 
+    @property
+    def agent_ids(self) -> list[int]:
+        """List of agent ids in the population."""
+        return list(self.agent_states.keys())
+
 
 @dataclass(frozen=True)
 class CollectiveAction[OUTCOME, DECISION]:

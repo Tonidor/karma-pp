@@ -38,7 +38,7 @@ class Mechanism[
         self,
         mechanism_state: MECHANISM_STATE,
         collective_action: COLLECTIVE_ACTION,
-        report: REPORT,
+        report: REPORT | None,
     ) -> dict[int, RESOLUTION]:
         """Build agent_id -> resolution mapping from action + report."""
         ...
@@ -47,7 +47,7 @@ class Mechanism[
     def update_state(
         self,
         previous: MECHANISM_STATE | None,
-        report: REPORT | None,
+        reports: dict[int, REPORT | None],  # collective_id -> report
         rng: np.random.Generator,
     ) -> MECHANISM_STATE:
         """Update mechanism state; initialize when timestep is 0."""

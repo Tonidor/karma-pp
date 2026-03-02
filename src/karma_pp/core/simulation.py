@@ -15,7 +15,8 @@ log = structlog.get_logger(__name__)
 
 @dataclass
 class Result[REPORT, WORLD_STATE, PRIVATE_STATE, POLICY_STATE, MECHANISM_STATE]:
-    report: REPORT | None
+    collectives: dict[int, list[int]]  # collective_id -> agent_ids
+    reports: dict[int, REPORT | None]  # collective_id -> report
     rewards: dict[int, float | None]
     world_state: WORLD_STATE
     population_state: PopulationState[PRIVATE_STATE, POLICY_STATE]
@@ -59,63 +60,91 @@ def run_simulation(
         mechanism_dynamics=mechanism_dynamics, 
         rng=rng,
     )
+    log.info("states_initialized")
+
+    prev_resolutions = {agent_id: None for agent_id in population.agent_ids}
+    prev_rewards = {agent_id: None for agent_id in population.agent_ids}
     results = [Result(
-        report=None,  # No report at initial state
-        rewards={agent_id: None for agent_id in population.agent_ids},
+        collectives={0: population.agent_ids},
+        reports={0: None},
+        rewards=prev_rewards,
         world_state=world_state,
         population_state=population_state,
         mechanism_state=mechanism_state,
     )]
-    log.info("states_initialized")
 
-    observations = population.get_observations(
-        population_state=population_state,
-        world_state=world_state,
-        mechanism_state=mechanism_state,
-        rng=rng,
-    )
     for t in range(1, steps + 1):
         log.info("timestep", timestep=t, private_states=[s.private for s in population_state.agent_states.values()])
 
-        # Act
-        agent_ids = list(population_state.agent_states.keys())
+        # Form collectives
+        collectives: dict[int, list[int]] = world.get_collectives(
+            world_state=world_state,
+            agent_ids=population_state.agent_ids,
+        )
+
+        # Observe
+        observations = population.get_observations(
+            population_state=population_state,
+            world_state=world_state,
+            mechanism_state=mechanism_state,
+            collectives=collectives,
+            rng=rng,
+        )
+
+        # Adapt
+        population_state = population.adapt(
+            population_state=population_state,
+            observations=observations,
+            resolutions=prev_resolutions,
+            rewards=prev_rewards,
+            timestep=t,
+            rng=rng,
+        )
+
+        # Plan
         agent_actions = population.get_actions(
             population_state=population_state,
             observations=observations,
             rng=rng,
         )
-        collective_action = world.filter_actions(
-            world_state=world_state,
-            agent_actions=agent_actions,
-            agent_ids=agent_ids,
-        )
-        report = mechanism.run(
-            mechanism_state=mechanism_state,
-            collective_action=collective_action,
-            rng=rng,
-        )
 
-        # Resolve outcomes before updating state, so get_resolutions always
-        # receives the same mechanism_state that was used to run the mechanism.
-        resolutions = mechanism.get_resolutions(
-            mechanism_state=mechanism_state,
-            collective_action=collective_action,
-            report=report,
-        )
+        # Coordinate
+        reports = {}
+        resolutions = {}
+        for collective_id, collective in collectives.items():
 
-        # Update mechanism and world states
+            collective_action = world.filter_actions(
+                world_state=world_state,
+                agent_actions=agent_actions,
+                collective=collective,
+            )
+            report = mechanism.run(
+                mechanism_state=mechanism_state,
+                collective_action=collective_action,
+                rng=rng,
+            )
+            agent_resolutions = mechanism.get_resolutions(
+                mechanism_state=mechanism_state,
+                collective_action=collective_action,
+                report=report,
+            )
+            reports[collective_id] = report
+            resolutions.update(agent_resolutions)
+
+        # Update
         mechanism_state = mechanism.update_state(
             previous=mechanism_state,
-            report=report,
+            reports=reports,
             rng=rng,
         )
         world_state = world.update_state(
             previous=world_state,
-            report=report,
+            reports=reports,
             rng=rng,
         )
 
-        rewards = population.get_rewards(
+        # Act
+        rewards: dict[int, float] = population.get_rewards(
             population_state=population_state,
             observations=observations,
             resolutions=resolutions,
@@ -127,30 +156,19 @@ def run_simulation(
             rng=rng,
         )
 
-        # Observe and adapt
-        observations = population.get_observations(
-            population_state=population_state,
-            world_state=world_state,
-            mechanism_state=mechanism_state,
-            rng=rng,
-        )
-        population_state = population.adapt(
-            population_state=population_state,
-            observations=observations,
-            resolutions=resolutions,
-            rewards=rewards,
-            timestep=t,
-            rng=rng,
-        )
-
+        # Store results
+        prev_resolutions = resolutions
+        prev_rewards = rewards
         result = Result(
-            report=report,
+            collectives=collectives,
+            reports=reports,
             rewards=rewards,
             world_state=world_state,
             population_state=population_state,
             mechanism_state=mechanism_state,
         )
         results.append(result)
+
         log.debug("timestep_complete")
 
     log.info("simulation_finished", total_steps=len(results) - 1)

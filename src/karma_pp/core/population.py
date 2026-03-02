@@ -77,18 +77,24 @@ class Population[
         population_state: PopulationState[AGENT_PRIVATE, POLICY_STATE],
         world_state: WORLD_STATE,
         mechanism_state: MECHANISM_STATE,
+        collectives: dict[int, list[int]],
         rng: np.random.Generator,
     ) -> dict[int, OBSERVATION]:
         """Get the observations for the population."""
         observations: dict[int, OBSERVATION] = {}
         for agent_id, state in population_state.agent_states.items():
             model = self.model_registry[self.agent_model_map[agent_id]]
+            collective_ids = [collective_id for collective_id, collective in collectives.items() if agent_id in collective]
+            if len(collective_ids) != 1:
+                raise ValueError(f"Agent {agent_id} is in multiple collectives or not in any: {collective_ids}")
+            n_agents = len(collectives[collective_ids[0]])
             observations[agent_id] = model.get_observation(
                 agent_id=agent_id,
                 agent_state=state,
                 world_state=world_state,
                 mechanism_state=mechanism_state,
                 population_state=population_state,
+                membership=(collective_ids[0], n_agents),
                 rng=rng,
             )
         return observations
@@ -98,9 +104,9 @@ class Population[
         population_state: PopulationState[AGENT_PRIVATE, POLICY_STATE],
         observations: dict[int, OBSERVATION],
         rng: np.random.Generator,
-    ) -> list[list[tuple[OUTCOME, SIGNAL]]]:
+    ) -> dict[int, list[tuple[OUTCOME, SIGNAL]]]:
         """Get per-agent list of actions; each action is (outcome, signal)."""
-        actions: list[list[tuple[OUTCOME, SIGNAL]]] = []
+        actions: dict[int, list[tuple[OUTCOME, SIGNAL]]] = {}
         for agent_id, state in population_state.agent_states.items():
             model = self.model_registry[self.agent_model_map[agent_id]]
             agent_actions = model.get_action(
@@ -109,7 +115,7 @@ class Population[
                 rng=rng,
             )
             log.info("get_actions", agent_id=agent_id, actions=agent_actions)
-            actions.append(agent_actions)
+            actions[agent_id] = agent_actions
         return actions
 
     def get_rewards(
@@ -159,8 +165,8 @@ class Population[
         self,
         population_state: PopulationState[AGENT_PRIVATE, POLICY_STATE],
         observations: dict[int, OBSERVATION],
-        resolutions: dict[int, RESOLUTION],
-        rewards: dict[int, float],
+        resolutions: dict[int, RESOLUTION | None],
+        rewards: dict[int, float | None],
         timestep: int,
         rng: np.random.Generator,
     ) -> PopulationState[AGENT_PRIVATE, POLICY_STATE]:
