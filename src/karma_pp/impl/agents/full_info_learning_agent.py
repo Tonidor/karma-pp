@@ -145,6 +145,7 @@ class FullInfoLearningAgent(
         self.d = d
         self._V = np.zeros((nu, nk), dtype=float)
         self._mechanism_dynamics = mechanism_dynamics
+        self._world_dynamics = world_dynamics
         return FullInfoPolicyState()
 
     def get_observation(
@@ -154,6 +155,7 @@ class FullInfoLearningAgent(
         world_state: ResourceWorldState,
         mechanism_state: KarmaState,
         population_state: PopulationState[int, FullInfoPolicyState],
+        membership: tuple[int, int],
         rng: np.random.Generator,
     ) -> FullInfoObservation:
         balance = mechanism_state.agent_balances[agent_id]
@@ -217,7 +219,7 @@ class FullInfoLearningAgent(
 
         nu = len(self.urgency_levels)
         nk = md.max_balance + 1
-        n = len(obs.population_privates)
+        collective_dist = self._world_dynamics.collective_size_distribution
 
         # ----------------------------------------------------------
         # Step 1: Re-estimate d from simulation population state.
@@ -251,34 +253,56 @@ class FullInfoLearningAgent(
 
         # ----------------------------------------------------------
         # Step 3: Outcome probabilities  γ(b) = P(ego wins | bid b)
+        # Uses collective_size_distribution: γ(b) = Σ_n p(n) γ_n(b).
         # ----------------------------------------------------------
         sel = md.selection_rule
-        gamma_b = np.array(
-            [sel.compute_gamma(b, v_b, n) for b in range(nk)], dtype=float
-        )  # (nk,)
+        gamma_b = np.zeros(nk, dtype=float)  # γ(b) = Σ_n p(n) γ_n(b), marginal over sizes
+        gamma_b_by_n: dict[int, np.ndarray] = {}  # n -> γ_n(b) for each bid b
+        for n_size, p_n in collective_dist.items():
+            # γ_n(b) = P(ego wins | bid b, collective size n)
+            gamma_b_by_n[n_size] = np.array(
+                [sel.compute_gamma(b, v_b, n_size) for b in range(nk)], dtype=float
+            )
+            gamma_b += p_n * gamma_b_by_n[n_size]
 
         # ----------------------------------------------------------
         # Step 4: Karma transition kernels  κ[k, b, k']
         # kappa_win[k, b, k'] = P(k' | k, b, won)
         # kappa_lose[k, b, k'] = P(k' | k, b, lost)
+        # κ_win, κ_lose marginalize over collective_size_distribution: κ = Σ_n p(n) κ_n.
         # Only filled for valid bids b ≤ k; rest stays zero (masked later).
         # ----------------------------------------------------------
         red = md.redistribution_rule
         kappa_win = np.zeros((nk, nk, nk), dtype=float)
         kappa_lose = np.zeros((nk, nk, nk), dtype=float)
 
-        for k_state in range(nk):
-            for b in range(k_state + 1):
-                g_b = float(gamma_b[b])
-                kappa_won_dist, kappa_lose_dist = red.compute_kappa(
-                    k_state, b, v_b, n, gamma_b=g_b
-                )
-                for k_next, prob in kappa_won_dist.items():
-                    kc = int(np.clip(k_next, 0, nk - 1))
-                    kappa_win[k_state, b, kc] += prob
-                for k_next, prob in kappa_lose_dist.items():
-                    kc = int(np.clip(k_next, 0, nk - 1))
-                    kappa_lose[k_state, b, kc] += prob
+        for n_size, p_n in collective_dist.items():
+            gamma_b_n = gamma_b_by_n[n_size]
+            for k_state in range(nk):
+                for b in range(k_state + 1):
+                    g_b = float(gamma_b_n[b])
+                    kappa_won_dist, kappa_lose_dist = red.compute_kappa(
+                        k_state, b, v_b, n_size, gamma_b=g_b
+                    )
+                    # Check for out-of-bounds karma states that will be clipped.
+                    won_oob = {k: p for k, p in kappa_won_dist.items() if (k < 0 or k > nk - 1) and p > 0}
+                    lose_oob = {k: p for k, p in kappa_lose_dist.items() if (k < 0 or k > nk - 1) and p > 0}
+                    if won_oob or lose_oob:
+                        log.warning(
+                            "karma_transition_clipped",
+                            timestep=timestep,
+                            k_state=k_state,
+                            bid=b,
+                            n_size=n_size,
+                            won_oob=won_oob,
+                            lose_oob=lose_oob,
+                        )
+                    for k_next, prob in kappa_won_dist.items():
+                        kc = int(np.clip(k_next, 0, nk - 1))
+                        kappa_win[k_state, b, kc] += p_n * prob
+                    for k_next, prob in kappa_lose_dist.items():
+                        kc = int(np.clip(k_next, 0, nk - 1))
+                        kappa_lose[k_state, b, kc] += p_n * prob
 
         # ----------------------------------------------------------
         # Step 5: Immediate expected reward  ζ[u, k, b]

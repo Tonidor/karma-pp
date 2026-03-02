@@ -110,6 +110,7 @@ class OptimalBiddingResourceAgent(
         world_state: ResourceWorldState,
         mechanism_state: KarmaState,
         population_state: PopulationState[int, OptimalBiddingPolicyState],
+        membership: tuple[int, int],
         rng: np.random.Generator,
     ) -> OptimalBiddingObservation:
         balance = mechanism_state.agent_balances[agent_id]
@@ -159,12 +160,12 @@ class OptimalBiddingResourceAgent(
         previous: AgentState[int, OptimalBiddingPolicyState],
         observation: OptimalBiddingObservation,
         resolution: KarmaResolution,
-        reward: float,
+        reward: float | None,
         timestep: int,
         rng: np.random.Generator,
     ) -> AgentState[int, OptimalBiddingPolicyState]:
         del rng
-        if timestep == -1:
+        if timestep <= 1:
             return AgentState(private=previous.private, policy=previous.policy)
         old = previous.policy
         balance_next = int(np.clip(observation.agent_balance, 0, old.max_balance))

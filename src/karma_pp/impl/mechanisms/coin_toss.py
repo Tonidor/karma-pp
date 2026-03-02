@@ -102,8 +102,9 @@ class CoinTossMechanism[OUTCOME, DECISION](
 
     def update_state(
         self,
-        previous: CoinTossState | None,
-        report: CoinTossReport[OUTCOME, DECISION] | None,
+        previous: CoinTossState,
+        reports: dict[int, CoinTossReport[OUTCOME, DECISION]],
         rng: np.random.Generator,
     ) -> CoinTossState:
-        return None
+        del previous, reports, rng
+        return previous

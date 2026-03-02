@@ -118,9 +118,8 @@ class BenevolentDictatorMechanism[OUTCOME, DECISION](
 
     def update_state(
         self,
-        previous: BenevolentDictatorState | None,
-        report: DictatorReport[OUTCOME, DECISION] | None,
+        previous: BenevolentDictatorState,
+        reports: dict[int, DictatorReport[OUTCOME, DECISION]],
         rng: np.random.Generator,
     ) -> BenevolentDictatorState:
-        # Stateless mechanism: state is always None.
-        return None
+        return previous

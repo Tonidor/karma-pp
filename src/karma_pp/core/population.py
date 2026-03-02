@@ -133,7 +133,11 @@ class Population[
                 observation=observations[agent_id],
                 resolution=resolutions[agent_id],
             )
-        log.info("get_rewards", rewards=rewards)
+        reward_distribution = {
+            r: sum(1 for r2 in rewards.values() if r2 == r)
+            for r in list(set(rewards.values()))
+        }
+        log.info("get_rewards", reward_distribution=reward_distribution)
         return rewards
     
     def update_state(
@@ -155,9 +159,13 @@ class Population[
             )
             new_agent_states[agent_id] = new_state
         private_agent_states = [s.private for s in new_agent_states.values()]
+        private_distribution = {
+            p: sum(1 for p2 in private_agent_states if p2 == p)
+            for p in private_agent_states
+        }
         log.info(
             "population_state_updated",
-            private_agent_states=private_agent_states,
+            private_distribution=private_distribution,
         )
         return PopulationState(new_agent_states)
 

@@ -33,6 +33,7 @@ def _karma_mechanism_cfg() -> tuple[Config, Config]:
 def _simple_ca(n_agents: int, commits: list[list[int]]) -> CollectiveAction:
     """Single-resource collective action with two decisions (no-one / agent-0 gets it)."""
     agent_ids = list(range(n_agents))
+    agent_weights = [1] * n_agents
     # decisions[d][i] = list of agents that get resource under decision d
     decisions = [[], [0]]
     # agent_outcomes[i] = [(False,), (True,)] for each agent
@@ -44,6 +45,7 @@ def _simple_ca(n_agents: int, commits: list[list[int]]) -> CollectiveAction:
     ]
     return CollectiveAction(
         agent_ids=agent_ids,
+        agent_weights=agent_weights,
         decisions=decisions,
         signals=commits,
         decisions_to_outcomes=decisions_to_outcomes,
@@ -58,6 +60,7 @@ class TestKarmaMechanismInitialize:
             selection_rule=sel,
             redistribution_rule=red,
             weight_karma_ratio=5.0,
+            max_balance=25,
         )
 
     def test_balances_proportional_to_weights(self):
@@ -74,13 +77,13 @@ class TestKarmaMechanismInitialize:
     def test_max_balance_equals_sum_of_balances(self):
         weights = {0: 1, 1: 1}
         _, dynamics = self.mech.initialize(agent_weights=weights, rng=_make_rng())
-        assert dynamics.max_balance == int(1 * 5.0) + int(1 * 5.0)
+        assert dynamics.max_balance == 25  # configured in setup
 
 
 class TestKarmaMechanismRun:
     def setup_method(self):
         sel, red = _karma_mechanism_cfg()
-        self.mech = KarmaMechanism(sel, red, weight_karma_ratio=2.0)
+        self.mech = KarmaMechanism(sel, red, weight_karma_ratio=2.0, max_balance=10)
         self.weights = {0: 1, 1: 1}
         self.state, _ = self.mech.initialize(self.weights, _make_rng())
 
@@ -95,7 +98,7 @@ class TestKarmaMechanismRun:
         """Total karma must be identical before and after a step."""
         ca = _simple_ca(2, [[0, 1], [0, 0]])
         report = self.mech.run(self.state, ca, _make_rng(0))
-        new_state = self.mech.update_state(self.state, report, _make_rng(0))
+        new_state = self.mech.update_state(self.state, {0: report}, _make_rng(0))
         total_before = sum(self.state.agent_balances.values())
         total_after = sum(new_state.agent_balances.values())
         assert total_before == total_after
@@ -104,7 +107,7 @@ class TestKarmaMechanismRun:
         ca = _simple_ca(2, [[0, 0], [0, 0]])
         report = self.mech.run(self.state, ca, _make_rng(0))
         with pytest.raises(ValueError, match="non-None previous state"):
-            self.mech.update_state(None, report, _make_rng())
+            self.mech.update_state(None, {0: report}, _make_rng())
 
     def test_balances_never_go_negative(self):
         """Run 50 steps and verify no balance ever goes negative."""
@@ -116,7 +119,7 @@ class TestKarmaMechanismRun:
             commits = [[0, b0], [0, b1]]
             ca = _simple_ca(2, commits)
             report = self.mech.run(state, ca, rng)
-            state = self.mech.update_state(state, report, rng)
+            state = self.mech.update_state(state, {0: report}, rng)
         for b in state.agent_balances.values():
             assert b >= 0, f"Balance went negative: {b}"
 

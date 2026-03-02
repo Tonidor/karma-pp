@@ -21,12 +21,14 @@ def _simple_collective_action(
     n_agents = len(signals)
     n_decisions = len(signals[0])
     agent_ids = list(range(n_agents))
+    agent_weights = [1] * n_agents
     # outcomes: False=no resource, True=got it
     agent_outcomes = [[(False,), (True,)] for _ in range(n_agents)]
     # decisions_to_outcomes[d][i]: which outcome index agent i gets under decision d
     decisions_to_outcomes = [[0] * n_agents, [1] * n_agents][:n_decisions]
     return CollectiveAction(
         agent_ids=agent_ids,
+        agent_weights=agent_weights,
         decisions=list(range(n_decisions)),
         signals=signals,
         decisions_to_outcomes=decisions_to_outcomes,
@@ -46,8 +48,8 @@ class TestBenevolentDictatorMechanism:
 
     def test_update_state_always_returns_none(self):
         state, _ = self.mech.initialize(agent_weights={0: 1}, rng=self.rng)
-        assert self.mech.update_state(previous=state, report=None, rng=self.rng) is None
-        assert self.mech.update_state(previous=None, report=None, rng=self.rng) is None
+        assert self.mech.update_state(previous=state, reports={}, rng=self.rng) is None
+        assert self.mech.update_state(previous=None, reports={}, rng=self.rng) is None
 
     def test_run_selects_highest_total_reward(self):
         """With signals [[1, 10], [1, 10]] the second decision has higher total."""
@@ -70,6 +72,7 @@ class TestBenevolentDictatorMechanism:
     def test_run_raises_on_no_decisions(self):
         empty_ca = CollectiveAction(
             agent_ids=[0],
+            agent_weights=[1],
             decisions=[],
             signals=[],
             decisions_to_outcomes=[],

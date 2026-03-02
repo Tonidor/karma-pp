@@ -165,14 +165,13 @@ class KarmaMechanism[OUTCOME, DECISION](
         selection_rule: Config,
         redistribution_rule: Config,
         weight_karma_ratio: float,
+        max_balance: int,
     ) -> None:
         """Initialize the karma mechanism."""
         self.selection_rule: SelectionRule = instantiate(selection_rule["code"], selection_rule["parameters"])
         self.redistribution_rule: RedistributionRule = instantiate(redistribution_rule["code"], redistribution_rule["parameters"])
         self.weight_karma_ratio = weight_karma_ratio
-        self.max_balance: int | None = None
-        # Stored at initialize() time so run() can pass correct weights to redistribution_rule.
-        self._agent_weights: dict[int, int] = {}
+        self.max_balance = max_balance
 
     def initialize(
         self,
@@ -185,8 +184,8 @@ class KarmaMechanism[OUTCOME, DECISION](
         }
         if any(b < 0 for b in agent_balances.values()):
             raise ValueError("Agent balances must be non-negative.")
-        self.max_balance = sum(agent_balances.values())
-        self._agent_weights = dict(agent_weights)
+        if max(agent_balances.values()) > self.max_balance:
+            raise ValueError("Agent balances must be less than or equal to max_balance.")
         dynamics = KarmaDynamics(
             selection_rule=self.selection_rule,
             redistribution_rule=self.redistribution_rule,
@@ -219,6 +218,7 @@ class KarmaMechanism[OUTCOME, DECISION](
         Agent order is taken only from collective_action.agent_ids; do not use
         mechanism_state.agent_balances key order.
         """
+        agent_weights = collective_action.agent_weights
         decisions = collective_action.decisions
         commits = collective_action.signals  # (N_agents, N_decisions)
         agent_ids = collective_action.agent_ids
@@ -226,8 +226,6 @@ class KarmaMechanism[OUTCOME, DECISION](
         n_decisions = len(decisions)
 
         log.debug("mechanism_run_start", n_decisions=n_decisions)
-        if len(mechanism_state.agent_balances) != n_agents:
-            raise ValueError("Mechanism state does not match number of agents.")
         if n_decisions != len(commits[0]) if commits else 0:
             raise ValueError("Signals columns must match number of decisions.")
         for aid in agent_ids:
@@ -250,11 +248,7 @@ class KarmaMechanism[OUTCOME, DECISION](
         # Transfers for selected decision: one signal per agent (column selected_idx).
         # Agent weights are ordered to match collective_action.agent_ids.
         commits_selected = [commits[row_idx][selected_idx] for row_idx in range(n_agents)]
-        agent_weights_list = [
-            int(self._agent_weights.get(agent_id, 1))
-            for agent_id in agent_ids
-        ]
-        transfer_list = self.redistribution_rule(commits_selected, agent_weights_list, rng)
+        transfer_list = self.redistribution_rule(commits_selected, agent_weights, rng)
         transfers = {agent_id: transfer_list[row_idx] for row_idx, agent_id in enumerate(agent_ids)}
 
         # Selected outcome per agent based on selected decision
@@ -313,26 +307,56 @@ class KarmaMechanism[OUTCOME, DECISION](
 
     def update_state(
         self,
-        previous: KarmaState | None,
-        report: KarmaReport[OUTCOME, DECISION] | None,
+        previous: KarmaState,
+        reports: dict[int, KarmaReport[OUTCOME, DECISION]],
         rng: np.random.Generator,
     ) -> KarmaState:
-        """Apply transfers from report to produce the next karma state.
-
-        Note: call initialize() before the simulation loop to create the initial
-        state. This method requires both a valid previous state and a report.
-        """
+        """Apply transfers from all reports to produce the next karma state."""
         if previous is None:
-            raise ValueError(
-                "KarmaMechanism.update_state requires a non-None previous state. "
-                "Call initialize() to create the initial mechanism state."
-            )
-        if report is None:
-            raise ValueError("KarmaMechanism.update_state requires a non-None report.")
+            raise ValueError("Karma mechanism requires non-None previous state.")
+        agent_transfers: dict[int, int] = {
+            agent_id: 0 for agent_id in previous.agent_balances.keys()
+        }
+        for report in reports.values():
+            for agent_id, transfer in report.transfers.items():
+                agent_transfers[agent_id] += int(transfer)
 
+        # Update balances and enforce non-negativity.
         new_balances = {
-            agent_id: previous.agent_balances[agent_id] + report.transfers.get(agent_id, 0)
+            agent_id: previous.agent_balances[agent_id] + agent_transfers[agent_id]
             for agent_id in previous.agent_balances
         }
-        log.info("mechanism_state_updated", balances=new_balances)
+        if any(b < 0 for b in new_balances.values()):
+            raise ValueError("Agent balances must be non-negative.")
+        if max(new_balances.values()) > self.max_balance:
+            raise ValueError(f"Agent balance exceeded max_balance: {max(new_balances.values())} > {self.max_balance}")
+        
+        # Distribuiton over balances
+        balance_distribution = {
+            b: sum(1 for b2 in new_balances.values() if b2 == b)
+            for b in range(self.max_balance + 1)
+        }
+        log.info("mechanism_state_updated", balance_distribution=balance_distribution)
         return KarmaState(agent_balances=new_balances)
+
+        # # Clip balances to the configured max_balance instead of raising, so that
+        # # long simulations and visualization runs remain stable even if a small
+        # # number of agents would otherwise exceed the analytical state space.
+        # clipped_balances: dict[int, int] = {}
+        # clipped_count = 0
+        # for agent_id, balance in raw_balances.items():
+        #     if balance > self.max_balance:
+        #         clipped_balances[agent_id] = self.max_balance
+        #         clipped_count += 1
+        #     else:
+        #         clipped_balances[agent_id] = balance
+
+        # if clipped_count > 0:
+        #     log.warning(
+        #         "karma_balances_clipped",
+        #         clipped_agents=clipped_count,
+        #         max_balance=self.max_balance,
+        #     )
+
+        # log.info("mechanism_state_updated", balances=clipped_balances)
+        # return KarmaState(agent_balances=clipped_balances)

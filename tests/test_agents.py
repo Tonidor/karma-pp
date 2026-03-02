@@ -26,7 +26,10 @@ _PENALTY = [-1.0]
 
 
 def _world_dynamics() -> ResourceWorldDynamics:
-    return ResourceWorldDynamics(resource_capacities=[1])
+    return ResourceWorldDynamics(
+        resource_capacities=[1],
+        collective_size_distribution={2: 1.0},
+    )
 
 
 def _karma_dynamics(max_balance: int = 10) -> KarmaDynamics:
@@ -222,7 +225,7 @@ class TestOptimalBiddingResourceAgent:
         from karma_pp.impl.mechanisms.karma.karma_mechanism import KarmaResolution
         obs = OptimalBiddingObservation(resource_capacities=[1], agent_balance=3)
         res = KarmaResolution(agent_id=0, selected_outcome=(False,), transfer=-1, outcome_scores=[], n_agents=2)
-        new_state = self.agent.adapt(self.agent_state, obs, res, reward=-1.0, timestep=1, rng=_make_rng())
+        new_state = self.agent.adapt(self.agent_state, obs, res, reward=-1.0, timestep=2, rng=_make_rng())
         assert new_state.policy.last_balance == 3
 
 

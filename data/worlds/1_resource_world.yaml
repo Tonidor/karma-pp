@@ -1,3 +1,4 @@
 code: karma_pp.impl.worlds.resource_world.resource_world.ResourceWorld
 parameters:
   resource_capacities: [1]
+  collective_size_distribution: {2: 1.0}

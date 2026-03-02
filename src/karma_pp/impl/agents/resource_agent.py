@@ -151,6 +151,7 @@ class ResourceAgent[
         world_state: ResourceWorldState,
         mechanism_state: MECHANISM_STATE,
         population_state: PopulationState[int, POLICY_STATE],
+        membership: tuple[int, int],
         rng: np.random.Generator,
     ) -> ResourceAgentObservation:
         """Build the observation for one agent."""

@@ -107,7 +107,9 @@ def _extract_step_arrays(
     allocation_row_indices: list[int] = []
 
     for result in results[1:]:
-        report = result.report
+        # For now we assume a single collective per step for visualization
+        # and take the first available report, if any.
+        report = next(iter(result.reports.values()), None)
         if report is None:
             continue
 

@@ -80,7 +80,9 @@ def test_initial_result_has_no_report():
     world_cfg, mech_cfg, pop_params = _load_scenario("2x2_randoms")
     world, mechanism, population = create_components(world_cfg, mech_cfg, pop_params)
     results = run_simulation(world, population, mechanism, steps=3, seed=0)
-    assert results[0].report is None
+    # In the new simulation, reports are stored per-collective.
+    # Initial state must have no reports for any collective.
+    assert all(r is None for r in results[0].reports.values())
 
 
 def test_all_agents_receive_rewards_each_step():

@@ -42,6 +42,7 @@ class CollectiveAction[OUTCOME, DECISION]:
     """Generic collective action over feasible decisions.
 
     - agent_ids: agent id for each row (length N_agents), defines canonical agent order
+    - agent_weights: weight for each agent (length N_agents)
     - decisions: list of feasible decisions
     - signals: per-agent, per-decision signals (shape: N_agents × N_decisions)
     - decisions_to_outcomes: maps decision index to per-agent outcome index (N_decisions × N_agents)
@@ -50,6 +51,7 @@ class CollectiveAction[OUTCOME, DECISION]:
     """
 
     agent_ids: list[int]
+    agent_weights: list[int]
     decisions: list[DECISION]
     signals: list[list[int | float]]
     decisions_to_outcomes: list[list[int]]

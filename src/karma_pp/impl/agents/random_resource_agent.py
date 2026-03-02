@@ -43,6 +43,7 @@ class RandomResourceAgent(
         world_state: ResourceWorldState,
         mechanism_state: KarmaState,
         population_state: PopulationState[int, PolicyState],
+        membership: tuple[int, int],
         rng: np.random.Generator,
     ) -> RandomObservation:
         balance = mechanism_state.agent_balances[agent_id]

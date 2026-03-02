@@ -123,17 +123,13 @@ class TurnTakingMechanism[OUTCOME, DECISION](
 
     def update_state(
         self,
-        previous: TurnTakingState | None,
-        report: TurnTakingReport[OUTCOME, DECISION] | None,
+        previous: TurnTakingState,
+        reports: dict[int, TurnTakingReport[OUTCOME, DECISION]],
         rng: np.random.Generator,
     ) -> TurnTakingState:
         del rng
-        if previous is None:
-            return {}
-        if report is None:
-            return previous
         new_state = dict(previous)
-        new_state[report.turn_holder_agent_id] = (
-            previous.get(report.turn_holder_agent_id, 0) + 1
-        )
+        for report in reports.values():
+            holder = report.turn_holder_agent_id
+            new_state[holder] = previous.get(holder, 0) + 1
         return new_state

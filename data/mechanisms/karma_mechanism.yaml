@@ -7,3 +7,4 @@ parameters:
     code: karma_pp.impl.mechanisms.karma.proportional_redistribution_rule.ProportionalRedistributionRule
     parameters: {}
   weight_karma_ratio: 3
+  max_balance: 20

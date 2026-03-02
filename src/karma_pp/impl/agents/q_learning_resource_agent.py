@@ -98,6 +98,7 @@ class QLearningResourceAgent(
         world_state: ResourceWorldState,
         mechanism_state: KarmaState,
         population_state: PopulationState[int, QLearningPolicyState],
+        membership: tuple[int, int],
         rng: np.random.Generator,
     ) -> QLearningObservation:
         balance = mechanism_state.agent_balances[agent_id]

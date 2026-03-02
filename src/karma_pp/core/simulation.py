@@ -48,7 +48,7 @@ def run_simulation(
 
     log.debug("initializing_states")
     world_state, world_dynamics = world.initialize(
-        n_agents=population.n_agents,
+        agent_ids=population.agent_ids,
         rng=rng,
     )
     mechanism_state, mechanism_dynamics = mechanism.initialize(
@@ -74,12 +74,12 @@ def run_simulation(
     )]
 
     for t in range(1, steps + 1):
-        log.info("timestep", timestep=t, private_states=[s.private for s in population_state.agent_states.values()])
+        log.info("timestep", timestep=t)
 
         # Form collectives
         collectives: dict[int, list[int]] = world.get_collectives(
             world_state=world_state,
-            agent_ids=population_state.agent_ids,
+            rng=rng,
         )
 
         # Observe
@@ -113,10 +113,13 @@ def run_simulation(
         resolutions = {}
         for collective_id, collective in collectives.items():
 
+            weights = {agent_id: population.agent_weights[agent_id] for agent_id in collective}
+            actions = {agent_id: agent_actions[agent_id] for agent_id in collective}
+
             collective_action = world.filter_actions(
                 world_state=world_state,
-                agent_actions=agent_actions,
-                collective=collective,
+                agent_weights=weights,
+                agent_actions=actions,
             )
             report = mechanism.run(
                 mechanism_state=mechanism_state,

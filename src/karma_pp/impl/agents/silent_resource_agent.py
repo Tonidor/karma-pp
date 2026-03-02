@@ -36,6 +36,7 @@ class SilentResourceAgent[MECHANISM_STATE](
         world_state: ResourceWorldState,
         mechanism_state: MECHANISM_STATE,
         population_state: PopulationState[int, PolicyState],
+        membership: tuple[int, int],
         rng: np.random.Generator,
     ) -> ResourceAgentObservation:
         return ResourceAgentObservation(
