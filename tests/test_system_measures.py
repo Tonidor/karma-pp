@@ -11,27 +11,45 @@ class TestAccessFairness:
     def test_perfect_fairness_equals_zero(self):
         """If all agents have same access rate, std = 0, so fairness = 0."""
         access = np.array([[1, 1], [1, 1], [0, 0]])  # both agents same
-        result = get_access_fairness(access)
+        result = get_access_fairness(access, weights=[1.0, 1.0])
         assert result == pytest.approx(0.0)
 
     def test_unequal_access_is_negative(self):
         """Negative std means unfair — function returns negative value."""
         access = np.array([[1, 0], [1, 0], [1, 0]])  # agent 0 always gets it
-        result = get_access_fairness(access)
+        result = get_access_fairness(access, weights=[1.0, 1.0])
         assert result < 0.0
 
     def test_empty_returns_zero(self):
-        assert get_access_fairness(np.zeros((0, 2))) == pytest.approx(0.0)
+        assert get_access_fairness(np.zeros((0, 2)), weights=[1.0, 1.0]) == pytest.approx(0.0)
+
+    def test_weighted_fairness(self):
+        """With weights, higher-weight agents' deviations count more."""
+        # Agent 0 always gets access, agent 1 never. Unweighted std > 0.
+        access = np.array([[1, 0], [1, 0], [1, 0]])
+        unweighted = get_access_fairness(access, weights=[1.0, 1.0])
+        assert unweighted < 0.0
+        # With equal weights, same as unweighted
+        weighted_eq = get_access_fairness(access, weights=[1.0, 1.0])
+        assert weighted_eq == pytest.approx(unweighted)
 
 
 class TestEfficiency:
     def test_mean_reward(self):
         rewards = np.array([[1.0, 2.0], [3.0, 4.0]])  # agents get [2, 3] means
-        result = get_efficiency(rewards)
+        result = get_efficiency(rewards, weights=[1.0, 1.0])
         assert result == pytest.approx(2.5)
 
     def test_empty_returns_zero(self):
-        assert get_efficiency(np.zeros((0, 2))) == pytest.approx(0.0)
+        assert get_efficiency(np.zeros((0, 2)), weights=[1.0, 1.0]) == pytest.approx(0.0)
+
+    def test_weighted_efficiency(self):
+        """With weights, higher-weight agents contribute more."""
+        # Agent 0 mean=1, agent 1 mean=3. Unweighted = 2.0
+        rewards = np.array([[1.0, 3.0], [1.0, 3.0]])
+        assert get_efficiency(rewards, weights=[1, 1]) == pytest.approx(2.0)
+        # Weight agent 1 twice as much: (1*1 + 2*3)/3 = 7/3
+        assert get_efficiency(rewards, weights=[1, 2]) == pytest.approx(7.0 / 3.0)
 
 
 class TestRewardFairness:

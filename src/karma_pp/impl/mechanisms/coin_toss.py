@@ -71,7 +71,7 @@ class CoinTossMechanism[OUTCOME, DECISION](
             agent_id: agent_outcomes[row_idx][decisions_to_outcomes[selected_idx][row_idx]]
             for row_idx, agent_id in enumerate(agent_ids)
         }
-        log.info(
+        log.debug(
             "coin_toss_selected",
             selected_idx=selected_idx,
             n_decisions=n_decisions,
@@ -106,5 +106,5 @@ class CoinTossMechanism[OUTCOME, DECISION](
         reports: dict[int, CoinTossReport[OUTCOME, DECISION]],
         rng: np.random.Generator,
     ) -> CoinTossState:
-        del previous, reports, rng
+        del reports, rng
         return previous

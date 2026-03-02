@@ -59,6 +59,22 @@ class TestBenevolentDictatorMechanism:
         report = self.mech.run(mechanism_state=state, collective_action=ca, rng=_make_rng(0))
         assert report.selected_decision == 1  # second decision index
 
+    def test_run_weights_rewards_proportionally(self):
+        """Higher-weight agents' rewards count more. Agent 0 (weight 2): [10, 0], Agent 1 (weight 1): [0, 10].
+        Weighted decision 0 = 20, decision 1 = 10 → decision 0 selected."""
+        ca = _simple_collective_action([[10.0, 0.0], [0.0, 10.0]])
+        ca = CollectiveAction(
+            agent_ids=ca.agent_ids,
+            agent_weights=[2, 1],  # agent 0 has weight 2, agent 1 has weight 1
+            decisions=ca.decisions,
+            signals=ca.signals,
+            decisions_to_outcomes=ca.decisions_to_outcomes,
+            agent_outcomes=ca.agent_outcomes,
+        )
+        state, _ = self.mech.initialize(agent_weights={0: 2, 1: 1}, rng=self.rng)
+        report = self.mech.run(mechanism_state=state, collective_action=ca, rng=_make_rng(0))
+        assert report.selected_decision == 0
+
     def test_run_breaks_ties_uniformly(self):
         """Equal total rewards → both decisions should sometimes be chosen."""
         ca = _simple_collective_action([[5.0, 5.0], [5.0, 5.0]])

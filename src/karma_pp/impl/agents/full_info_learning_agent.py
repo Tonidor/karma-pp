@@ -108,8 +108,8 @@ class FullInfoLearningAgent(
             reward_per_resource=reward_per_resource,
             no_resource_penalty=no_resource_penalty,
         )
-        if not (0.0 < gamma < 1.0):
-            raise ValueError(f"gamma must be in (0, 1); got {gamma}.")
+        if not (0.0 <= gamma <= 1.0):
+            raise ValueError(f"gamma must be in [0, 1]; got {gamma}.")
         self.gamma = float(gamma)
         self.eta = float(eta)
         self.lam = float(lam)
@@ -284,19 +284,19 @@ class FullInfoLearningAgent(
                     kappa_won_dist, kappa_lose_dist = red.compute_kappa(
                         k_state, b, v_b, n_size, gamma_b=g_b
                     )
-                    # Check for out-of-bounds karma states that will be clipped.
-                    won_oob = {k: p for k, p in kappa_won_dist.items() if (k < 0 or k > nk - 1) and p > 0}
-                    lose_oob = {k: p for k, p in kappa_lose_dist.items() if (k < 0 or k > nk - 1) and p > 0}
-                    if won_oob or lose_oob:
-                        log.warning(
-                            "karma_transition_clipped",
-                            timestep=timestep,
-                            k_state=k_state,
-                            bid=b,
-                            n_size=n_size,
-                            won_oob=won_oob,
-                            lose_oob=lose_oob,
-                        )
+                    # # Check for out-of-bounds karma states that will be clipped.
+                    # won_oob = {k: p for k, p in kappa_won_dist.items() if (k < 0 or k > nk - 1) and p > 0}
+                    # lose_oob = {k: p for k, p in kappa_lose_dist.items() if (k < 0 or k > nk - 1) and p > 0}
+                    # if won_oob or lose_oob:
+                    #     log.warning(
+                    #         "karma_transition_clipped",
+                    #         timestep=timestep,
+                    #         k_state=k_state,
+                    #         bid=b,
+                    #         n_size=n_size,
+                    #         won_oob=won_oob,
+                    #         lose_oob=lose_oob,
+                    #     )
                     for k_next, prob in kappa_won_dist.items():
                         kc = int(np.clip(k_next, 0, nk - 1))
                         kappa_win[k_state, b, kc] += p_n * prob

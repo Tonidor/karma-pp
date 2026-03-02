@@ -24,6 +24,7 @@ from karma_pp.impl.agents.full_info_learning_agent import FullInfoLearningAgent
 from karma_pp.utils.plots import (
     plot_access_fairness_vs_efficiency,
     plot_efficiency_fairness_comparison,
+    plot_efficiency_fairness_mechanisms,
     plot_full_info_policy_and_distribution,
     plot_markov_stationary_violin,
     plot_metrics_table,
@@ -107,40 +108,47 @@ def _extract_step_arrays(
     allocation_row_indices: list[int] = []
 
     for result in results[1:]:
-        # For now we assume a single collective per step for visualization
-        # and take the first available report, if any.
-        report = next(iter(result.reports.values()), None)
-        if report is None:
-            continue
-
-        selected_outcomes = getattr(report, "selected_outcomes", None)
-        if not isinstance(selected_outcomes, dict) or len(selected_outcomes) != n_agents:
-            continue
-
-        # Rewards from results (agent compute_reward), in stable agent id order
         agent_ids = sorted(result.population_state.agent_states.keys())
         if None in (result.rewards.get(aid) for aid in agent_ids):
             continue
         rewards_row = [float(result.rewards[aid]) for aid in agent_ids]
         urgency_values = [float(result.population_state.agent_states[aid].private) for aid in agent_ids]
+
+        # Build agent_id -> collective_id map (supports multiple collectives per step)
+        agent_to_collective: dict[int, int] = {}
+        for cid, agent_list in result.collectives.items():
+            for aid in agent_list:
+                agent_to_collective[aid] = cid
+
         access_row: list[float] = []
-        urgency_row: list[float] = []
         allocated_agent = None
-        outcomes_list = [selected_outcomes.get(aid) for aid in agent_ids]
-        if None in outcomes_list:
-            continue
-        for idx, (urgency_value, outcome) in enumerate(zip(urgency_values, outcomes_list)):
+        for idx, aid in enumerate(agent_ids):
+            cid = agent_to_collective.get(aid)
+            if cid is None:
+                access_row.append(0.0)
+                continue
+            report = result.reports.get(cid)
+            if report is None:
+                access_row.append(0.0)
+                continue
+            selected_outcomes = getattr(report, "selected_outcomes", None)
+            if not isinstance(selected_outcomes, dict):
+                access_row.append(0.0)
+                continue
+            outcome = selected_outcomes.get(aid)
+            if outcome is None:
+                access_row.append(0.0)
+                continue
             outcome_array = np.asarray(outcome, dtype=float)
             has_access = bool(np.any(outcome_array > 0))
             access_row.append(1.0 if has_access else 0.0)
             if has_access and allocated_agent is None:
                 allocated_agent = idx
-            urgency_row.append(float(urgency_value))
 
         row_idx = len(access_by_step)
         access_by_step.append(access_row)
         rewards_by_step.append(rewards_row)
-        urgencies_by_step.append(urgency_row)
+        urgencies_by_step.append(urgency_values)
         if allocated_agent is not None:
             allocation.append(allocated_agent)
             allocation_row_indices.append(row_idx)
@@ -277,6 +285,89 @@ def _parse_gamma_sweep(gamma_sweep: str | None) -> list[float]:
     return [float(x.strip()) for x in gamma_sweep.split(",") if x.strip()]
 
 
+# Gamma sweep for full-info efficiency-fairness mechanisms plot (α in user-facing labels)
+_MECHANISMS_GAMMAS = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.98, 1.0]
+
+
+def _gamma_for_full_info(gamma: float) -> float:
+    """Map display gamma to run gamma. FullInfoLearningAgent: γ=1 may not converge, use 0.999."""
+    if gamma >= 1.0:
+        return 0.999
+    return gamma
+
+
+def _run_efficiency_fairness_mechanisms(
+    steps: int,
+    n_runs: int,
+    seed_base: int,
+    save_path: str,
+) -> None:
+    """Run full info (gamma sweep), benevolent dictator, turn-taking, coin toss; plot combined."""
+    data_dir = Path(__file__).resolve().parents[3] / "data" / "scenarios"
+    full_info_scenario = data_dir / "1000x2_full_info_learners.yaml"
+    dictator_scenario = data_dir / "1000x2_benevolent_dictator.yaml"
+    turn_taking_scenario = data_dir / "1000x2_turn_taking_truthful.yaml"
+    coin_toss_scenario = data_dir / "1000x2_coin_toss_silent.yaml"
+
+    for p in (full_info_scenario, dictator_scenario, turn_taking_scenario, coin_toss_scenario):
+        if not p.exists():
+            raise click.ClickException(f"Scenario not found: {p}")
+
+    world_cfg, full_info_pop_cfg, full_info_mech_cfg = _load_scenario_cfgs(str(full_info_scenario))
+    dictator_world, dictator_pop, dictator_mech = _load_scenario_cfgs(str(dictator_scenario))
+    tt_world, tt_pop, tt_mech = _load_scenario_cfgs(str(turn_taking_scenario))
+    ct_world, ct_pop, ct_mech = _load_scenario_cfgs(str(coin_toss_scenario))
+
+    full_info_eff: list[float] = []
+    full_info_fair: list[float] = []
+
+    for gamma_idx, gamma in enumerate(_MECHANISMS_GAMMAS):
+        run_gamma = _gamma_for_full_info(gamma)
+        pop_cfg = copy.deepcopy(full_info_pop_cfg)
+        pop_cfg["parameters"]["agent_type_cfgs"]["full_info"]["agent_model"]["parameters"]["gamma"] = run_gamma
+        log.info("mechanisms_run", variant="full_info", gamma=gamma, n_runs=n_runs, steps=steps)
+        effs, fairs = [], []
+        for r in range(n_runs):
+            seed = seed_base + gamma_idx * 100 + r
+            eff, fair = _run_scenario_and_metrics(
+                world_cfg, pop_cfg, full_info_mech_cfg, steps, seed
+            )
+            effs.append(eff)
+            fairs.append(fair)
+        full_info_eff.append(float(np.mean(effs)))
+        full_info_fair.append(float(np.mean(fairs)))
+
+    log.info("mechanisms_run", variant="Benevolent Dictator", n_runs=n_runs, steps=steps)
+    eff_dict, fair_dict = _mean_efficiency_and_fairness(
+        dictator_world, dictator_pop, dictator_mech, steps, n_runs, 20_000, seed_base
+    )
+
+    log.info("mechanisms_run", variant="Turn-taking", n_runs=n_runs, steps=steps)
+    eff_tt, fair_tt = _mean_efficiency_and_fairness(
+        tt_world, tt_pop, tt_mech, steps, n_runs, 30_000, seed_base
+    )
+
+    log.info("mechanisms_run", variant="Coin toss", n_runs=n_runs, steps=steps)
+    eff_ct, fair_ct = _mean_efficiency_and_fairness(
+        ct_world, ct_pop, ct_mech, steps, n_runs, 40_000, seed_base
+    )
+
+    Path("data/plots").mkdir(parents=True, exist_ok=True)
+    plot_efficiency_fairness_mechanisms(
+        full_info_efficiency=full_info_eff,
+        full_info_fairness=full_info_fair,
+        full_info_gammas=_MECHANISMS_GAMMAS,
+        benevolent_dictator_eff=eff_dict,
+        benevolent_dictator_fair=fair_dict,
+        turn_taking_eff=eff_tt,
+        turn_taking_fair=fair_tt,
+        coin_toss_eff=eff_ct,
+        coin_toss_fair=fair_ct,
+        save_path=save_path,
+    )
+    log.info("plot_saved", path=save_path)
+
+
 def _run_efficiency_fairness_comparison(
     random_scenario: str,
     q_learner_scenario: str,
@@ -379,6 +470,7 @@ def _run_efficiency_fairness_comparison(
         "nash_welfare",
         "reward_over_time",
         "efficiency_fairness_comparison",
+        "efficiency_fairness_mechanisms",
         "full_info_policy_distribution",
         "markov_urgency_metrics",
         "markov_urgency_violin",
@@ -458,6 +550,15 @@ def vis(
 ):
     """Create visualizations from simulation outputs."""
     configure_logging(level=log_level)
+
+    if plot_name == "efficiency_fairness_mechanisms":
+        _run_efficiency_fairness_mechanisms(
+            steps=steps,
+            n_runs=n_runs,
+            seed_base=seed_base,
+            save_path=out_path or "data/plots/efficiency_fairness_mechanisms.png",
+        )
+        return
 
     if plot_name == "efficiency_fairness_comparison":
         if len(scenarios) < 4:
@@ -744,8 +845,10 @@ def vis(
         results = run_simulation(world, population, mechanism, steps, seed)
 
         access_by_step, rewards_by_step, _, allocation, allocated_urgencies = _extract_step_arrays(results)
-        access_fairness_values.append(get_access_fairness(access_by_step))
-        efficiency_values.append(get_efficiency(rewards_by_step))
+        agent_ids = sorted(results[0].population_state.agent_states.keys())
+        weights = np.asarray([population.agent_weights[aid] for aid in agent_ids])
+        access_fairness_values.append(get_access_fairness(access_by_step, weights))
+        efficiency_values.append(get_efficiency(rewards_by_step, weights))
 
         if allocation.size == 0:
             raise click.ClickException(
@@ -795,7 +898,9 @@ def _run_scenario_and_metrics(
     world, mechanism, population = create_components(world_cfg, mechanism_cfg, population_params)
     results = run_simulation(world, population, mechanism, steps, seed)
     access_by_step, rewards_by_step, _, _, _ = _extract_step_arrays(results)
-    return get_efficiency(rewards_by_step), get_access_fairness(access_by_step)
+    agent_ids = sorted(results[0].population_state.agent_states.keys())
+    weights = np.asarray([population.agent_weights[aid] for aid in agent_ids])
+    return get_efficiency(rewards_by_step, weights), get_access_fairness(access_by_step, weights)
 
 
 # Discount factors (gamma) for Q-learner comparison

@@ -61,7 +61,7 @@ class ProportionalRedistributionRule(RedistributionRule):
             extra[chosen_agents] = counts
 
         net = base + extra - commits
-        log.info(
+        log.debug(
             "proportional_redistribution",
             commits=commits.tolist(),
             net_transfer=net.tolist(),

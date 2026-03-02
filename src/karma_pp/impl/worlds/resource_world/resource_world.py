@@ -183,7 +183,7 @@ class ResourceWorld[PRIVATE_STATE, REPORT](
             for i in range(len(agent_outcomes))
         ]
         decision_total_commits = np.asarray(collective_commits).sum(axis=0).tolist()
-        log.info(
+        log.debug(
             "filter_actions",
             possible_decisions=possible_decisions,
             decision_total_commits=decision_total_commits,

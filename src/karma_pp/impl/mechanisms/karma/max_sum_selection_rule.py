@@ -26,7 +26,7 @@ class MaxSumSelectionRule(SelectionRule):
         max_total = int(np.max(total_commits))
         tied = np.where(total_commits == max_total)[0]
         selected_idx = int(rng.choice(tied))
-        log.info("max_sum_selection", total_commits=total_commits.tolist(), max_total=max_total, selected_idx=selected_idx)
+        log.debug("max_sum_selection", total_commits=total_commits.tolist(), max_total=max_total, selected_idx=selected_idx)
         return selected_idx
 
     def compute_gamma(

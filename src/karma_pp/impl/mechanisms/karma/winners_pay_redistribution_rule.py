@@ -44,7 +44,7 @@ class WinnersPayRedistributionRule(RedistributionRule):
         weights = np.asarray(agent_weights, dtype=np.int64)
 
         if int(commits.max()) == 0:
-            log.info("winners_pay_redistribution", pool=0)
+            log.debug("winners_pay_redistribution", pool=0)
             return np.zeros(n_agents, dtype=np.int64).tolist()
 
         # Winners: non-zero bidders; losers: zero bidders.
@@ -72,7 +72,7 @@ class WinnersPayRedistributionRule(RedistributionRule):
             extra[chosen_agents] = counts
 
         net = base_transfers + extra - commits
-        log.info(
+        log.debug(
             "winners_pay_redistribution",
             commits=commits.tolist(),
             pool=pool,

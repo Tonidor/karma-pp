@@ -475,6 +475,113 @@ def plot_full_info_policy_and_distribution(
     plt.close()
 
 
+def plot_efficiency_fairness_mechanisms(
+    full_info_efficiency: list[float],
+    full_info_fairness: list[float],
+    full_info_gammas: list[float],
+    benevolent_dictator_eff: float,
+    benevolent_dictator_fair: float,
+    turn_taking_eff: float,
+    turn_taking_fair: float,
+    coin_toss_eff: float,
+    coin_toss_fair: float,
+    save_path: str = "data/plots/efficiency_fairness_mechanisms.png",
+) -> None:
+    """Plot efficiency vs fairness: full info (gamma sweep) + benevolent dictator + turn-taking + coin toss."""
+    sns.set_theme(style="whitegrid")
+    sns.set(font_scale=1.5)
+    sns.set_context("paper", font_scale=1.5, rc={"lines.linewidth": 2.5})
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    # Full info: line + circles with gamma colormap
+    sweep_arr = np.asarray(full_info_gammas)
+    eff_arr = np.asarray(full_info_efficiency)
+    fair_arr = np.asarray(full_info_fairness)
+    order = np.argsort(sweep_arr)
+    eff_ordered = eff_arr[order]
+    fair_ordered = fair_arr[order]
+    sweep_ordered = sweep_arr[order]
+
+    cmap = plt.get_cmap("YlGnBu_r")
+    norm = plt.Normalize(vmin=sweep_ordered.min(), vmax=sweep_ordered.max())
+    colors = [cmap(norm(v)) for v in sweep_ordered]
+
+    ax.plot(
+        eff_ordered,
+        fair_ordered,
+        color="gray",
+        linestyle="-",
+        linewidth=1.5,
+        alpha=0.7,
+        zorder=0,
+    )
+    for i, (eff, fair) in enumerate(zip(eff_ordered, fair_ordered)):
+        ax.scatter(
+            eff,
+            fair,
+            c=[colors[i]],
+            marker="o",
+            s=120,
+            label="Full info (α sweep)" if i == 0 else None,
+            edgecolors="black",
+            linewidths=1.5,
+            alpha=0.9,
+            zorder=1,
+        )
+
+    # Benevolent dictator
+    ax.scatter(
+        benevolent_dictator_eff,
+        benevolent_dictator_fair,
+        c="#d00000",
+        marker="*",
+        s=280,
+        label="Benevolent Dictator",
+        edgecolors="black",
+        linewidths=1.5,
+        alpha=0.95,
+        zorder=4,
+    )
+
+    # Turn-taking
+    ax.scatter(
+        turn_taking_eff,
+        turn_taking_fair,
+        c="#2ca02c",
+        marker="^",
+        s=180,
+        label="Turn-taking",
+        edgecolors="black",
+        linewidths=1.5,
+        alpha=0.9,
+        zorder=3,
+    )
+
+    # Coin toss
+    ax.scatter(
+        coin_toss_eff,
+        coin_toss_fair,
+        c="#1f77b4",
+        marker="s",
+        s=150,
+        label="Coin toss",
+        edgecolors="black",
+        linewidths=1.5,
+        alpha=0.9,
+        zorder=2,
+    )
+
+    ax.set_xlabel("Efficiency", fontsize=14)
+    ax.set_ylabel("Access Fairness", fontsize=14)
+    ax.set_title("Efficiency vs. Access Fairness (1000 agents, 3 runs)", fontsize=16, fontweight="bold")
+    ax.legend(loc="best", fontsize=10)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+
 def plot_metrics_table(
     row_labels: list[str],
     column_labels: list[str],

@@ -1,4 +1,4 @@
-"""TurnTaking mechanism: selects the agent with lowest turn count, then picks the decision with highest signal from that agent."""
+"""TurnTaking mechanism: selects the agent most deserving of a turn (by turn_count/weight), then picks the decision with highest signal from that agent."""
 
 from dataclasses import dataclass
 
@@ -38,9 +38,9 @@ class TurnTakingMechanism[OUTCOME, DECISION](
     ]
 ):
     """
-    Maintains turn counts per agent. Each step: select the agent with the lowest
-    count (first in list on tie), pick the decision with highest signal from that
-    agent, then increment that agent's count.
+    Maintains turn counts per agent. Each step: select the agent most deserving
+    of a turn (lowest turn_count / weight, so higher-weight agents get proportionally
+    more turns). Ties are broken uniformly at random.
     """
 
     def initialize(
@@ -70,11 +70,21 @@ class TurnTakingMechanism[OUTCOME, DECISION](
             raise ValueError("Signals columns must match number of decisions.")
 
         turn_counts = mechanism_state
-        counts_for_participants = [turn_counts.get(aid, 0) for aid in agent_ids]
-        min_count = min(counts_for_participants)
-        turn_holder_idx = next(
-            i for i, c in enumerate(counts_for_participants) if c == min_count
+        agent_weights = np.asarray(collective_action.agent_weights, dtype=np.float64)
+        if len(agent_weights) != len(agent_ids):
+            raise ValueError(
+                f"agent_weights length {len(agent_weights)} must match number of agents {len(agent_ids)}"
+            )
+        if np.any(agent_weights <= 0):
+            raise ValueError("agent_weights must be strictly positive.")
+        # Priority = turn_count / weight; lower = more deserving (higher-weight agents get more turns)
+        counts_for_participants = np.array(
+            [turn_counts.get(aid, 0) for aid in agent_ids], dtype=np.float64
         )
+        priorities = counts_for_participants / agent_weights
+        min_priority = np.min(priorities)
+        tied_indices = np.where(np.isclose(priorities, min_priority))[0].tolist()
+        turn_holder_idx = int(rng.choice(tied_indices))
         turn_holder_id = agent_ids[turn_holder_idx]
 
         agent_signals = signals[turn_holder_idx]
@@ -90,7 +100,7 @@ class TurnTakingMechanism[OUTCOME, DECISION](
             for row_idx, agent_id in enumerate(agent_ids)
         }
 
-        log.info(
+        log.debug(
             "turn_taking_selected",
             turn_holder=turn_holder_id,
             selected_idx=selected_idx,

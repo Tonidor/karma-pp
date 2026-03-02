@@ -258,7 +258,7 @@ class KarmaMechanism[OUTCOME, DECISION](
             agent_id: agent_outcomes[row_idx][decisions_to_outcomes[selected_idx][row_idx]]
             for row_idx, agent_id in enumerate(agent_ids)
         }
-        log.info("mechanism_run_complete", selected_decision=collective_decision, transfers=transfers)
+        log.debug("mechanism_run_complete", selected_decision=collective_decision, transfers=transfers)
 
         return KarmaReport[OUTCOME, DECISION](
             selected_decision=collective_decision,
@@ -336,7 +336,7 @@ class KarmaMechanism[OUTCOME, DECISION](
             b: sum(1 for b2 in new_balances.values() if b2 == b)
             for b in range(self.max_balance + 1)
         }
-        log.info("mechanism_state_updated", balance_distribution=balance_distribution)
+        log.debug("mechanism_state_updated", balance_distribution=balance_distribution)
         return KarmaState(agent_balances=new_balances)
 
         # # Clip balances to the configured max_balance instead of raising, so that
@@ -358,5 +358,5 @@ class KarmaMechanism[OUTCOME, DECISION](
         #         max_balance=self.max_balance,
         #     )
 
-        # log.info("mechanism_state_updated", balances=clipped_balances)
+        # log.debug("mechanism_state_updated", balances=clipped_balances)
         # return KarmaState(agent_balances=clipped_balances)

@@ -1,31 +1,49 @@
 import numpy as np
 
 
-def get_access_fairness(access_by_step):
+def get_access_fairness(access_by_step, weights):
     """
-    Access fairness is the standard deviation of the fraction of resource access by each agent.
+    Access fairness is the negative (weighted) standard deviation of the fraction of
+    resource access by each agent. Higher-weight agents' deviations count more.
 
     Args:
         access_by_step: shape (num_steps, num_agents)
+        weights: array of shape (num_agents,) with agent weights.
     """
     access_by_step = np.asarray(access_by_step)
     if access_by_step.shape[0] == 0:
         return 0.0
     frac_success_by_agent = np.sum(access_by_step, axis=0) / access_by_step.shape[0]
-    return -float(np.std(frac_success_by_agent))
+    n = frac_success_by_agent.size
+    w = np.asarray(weights, dtype=float)
+    if w.shape[0] != n:
+        raise ValueError(f"weights length {w.shape[0]} must match num_agents {n}")
+    w = w / w.sum()
+    weighted_mean = float(np.dot(w, frac_success_by_agent))
+    weighted_var = float(np.dot(w, (frac_success_by_agent - weighted_mean) ** 2))
+    weighted_std = np.sqrt(weighted_var) if weighted_var > 0 else 0.0
+    return -float(weighted_std)
 
 
-def get_efficiency(rewards_by_step):
+def get_efficiency(rewards_by_step, weights):
     """
-    Efficiency is the mean of mean reward per agent.
+    Efficiency is the (weighted) mean of mean reward per agent. Higher-weight agents
+    contribute more to the aggregate.
 
     Args:
         rewards_by_step: shape (num_steps, num_agents)
+        weights: array of shape (num_agents,) with agent weights.
     """
     rewards_by_step = np.asarray(rewards_by_step)
     if rewards_by_step.size == 0:
         return 0.0
-    return float(np.mean(np.mean(rewards_by_step, axis=0)))
+    mean_rewards_per_agent = np.mean(rewards_by_step, axis=0)
+    n = mean_rewards_per_agent.size
+    w = np.asarray(weights, dtype=float)
+    if w.shape[0] != n:
+        raise ValueError(f"weights length {w.shape[0]} must match num_agents {n}")
+    w = w / w.sum()
+    return float(np.dot(w, mean_rewards_per_agent))
 
 
 def get_reward_fairness(rewards_by_step):

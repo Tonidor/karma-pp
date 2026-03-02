@@ -73,7 +73,13 @@ class BenevolentDictatorMechanism[OUTCOME, DECISION](
         if not np.all(np.isfinite(collective_rewards)):
             raise ValueError("All reported rewards must be finite numbers.")
 
-        total_reward = np.sum(collective_rewards, axis=0)  # (D,)
+        # Weight each agent's reward by their agent_weight for proportional consideration
+        agent_weights = np.asarray(collective_action.agent_weights, dtype=np.float64)
+        if len(agent_weights) != n_agents:
+            raise ValueError(
+                f"agent_weights length {len(agent_weights)} must match number of agents {n_agents}"
+            )
+        total_reward = (collective_rewards * agent_weights[:, np.newaxis]).sum(axis=0)  # (D,)
         best_value = float(np.max(total_reward))
         best_indices = np.flatnonzero(np.isclose(total_reward, best_value))
         selected_idx = int(rng.choice(best_indices))
@@ -87,7 +93,7 @@ class BenevolentDictatorMechanism[OUTCOME, DECISION](
             agent_id: agent_outcomes[row_idx][decisions_to_outcomes[selected_idx][row_idx]]
             for row_idx, agent_id in enumerate(agent_ids)
         }
-        log.info(
+        log.debug(
             "benevolent_dictator_selected",
             selected_idx=selected_idx,
             selected_value=best_value,
