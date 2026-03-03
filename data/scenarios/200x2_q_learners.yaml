@@ -1,0 +1,22 @@
+# Karma mechanism with 200 Q-learning agents
+world_file: ../worlds/1_resource_world.yaml
+mechanism_file: ../mechanisms/karma_mechanism.yaml
+population:
+  q_learner:
+    n_agents: 200
+    weight: 1.0
+    agent_model:
+      code: karma_pp.impl.agents.q_learning_resource_agent.QLearningResourceAgent
+      parameters:
+        transition_matrix:
+          - [0.8, 0.2]
+          - [0.2, 0.8]
+        urgency_levels: [1, 3]
+        initial_urgency: 1
+        reward_per_resource: [0.0]
+        no_resource_penalty: [-1.0]
+        alpha: 0.2
+        epsilon: 0.5
+        gamma: 0.99
+        epsilon_min: 0.05
+        epsilon_decay: 0.9985

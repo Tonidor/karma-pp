@@ -16,11 +16,14 @@ Requires-Dist: structlog
 Requires-Dist: click
 Requires-Dist: seaborn
 Requires-Dist: cvxpy
+Requires-Dist: duckdb
 Provides-Extra: dev
 Requires-Dist: pytest>=7.0; extra == "dev"
 Requires-Dist: matplotlib; extra == "dev"
 
 # karma-pp
+
+A multi-agent coordination simulation framework implementing a karma mechanism for resource allocation, evaluated against a benevolent dictator baseline and random/optimal bidding strategies.
 
 ## Installation
 
@@ -28,9 +31,23 @@ Requires-Dist: matplotlib; extra == "dev"
 pip install -e .
 ```
 
+For development (includes pytest):
+
+```bash
+pip install -e ".[dev]"
+```
+
+Requires **Python 3.12+**.
+
+## Running tests
+
+```bash
+pytest
+```
+
 ## Commands
 
-The CLI is available via `kpp`.
+The CLI is available via `kpp`. Scenario files can be passed as any path — file references within them are resolved relative to the scenario file itself, so the commands work from any directory.
 
 ### `run` — Run a simulation
 
@@ -92,17 +109,23 @@ kpp vis <PLOT_NAME> [OPTIONS]
 # Run a short simulation
 kpp run --scenario data/scenarios/2x2_benevolent_dictator.yaml --steps 100
 
+# Run with debug logging and a different seed
+kpp run --scenario data/scenarios/2x2_q_learners.yaml --steps 500 --seed 7 --log-level DEBUG
+
 # Plot efficiency vs fairness for one scenario
 kpp vis access_fairness_vs_efficiency --scenario data/scenarios/2x2_benevolent_dictator.yaml --steps 500
 
 # Compare multiple scenarios with custom labels
-kpp vis nash_welfare --scenario data/scenarios/2x2_randoms.yaml --scenario data/scenarios/2x2_benevolent_dictator.yaml --label "Random" --label "Dictator"
+kpp vis nash_welfare \
+  --scenario data/scenarios/2x2_randoms.yaml \
+  --scenario data/scenarios/2x2_benevolent_dictator.yaml \
+  --label "Random" --label "Dictator"
 
 # Export Markov metrics to YAML
 kpp vis markov_urgency_metrics --scenario data/scenarios/2x2_benevolent_dictator.yaml --out data/plots/metrics.yaml
 
 # Generate comparison plot (Random vs Optimal vs Dictator vs Q-learners)
-# Order: random, optimal, dictator, q-learner. Saves to data/plots/ by default.
+# Scenarios must be passed in order: random, optimal, dictator, q-learner
 kpp vis efficiency_fairness_comparison \
   --scenario data/scenarios/2x2_randoms.yaml \
   --scenario data/scenarios/2x2_optimal_bidders.yaml \
@@ -111,10 +134,34 @@ kpp vis efficiency_fairness_comparison \
   --steps 200 --n-runs 2
 
 # Generate metrics table (Random vs Q-learning vs Optimal)
-# Order: random, q-learner, optimal. Saves to data/plots/ by default.
+# Scenarios must be passed in order: random, q-learner, optimal
 kpp vis metrics_table \
   --scenario data/scenarios/2x2_randoms.yaml \
   --scenario data/scenarios/2x2_q_learners.yaml \
   --scenario data/scenarios/2x2_optimal_bidders.yaml \
   --steps 200 --n-runs 2
 ```
+
+## Project structure
+
+```
+data/
+  scenarios/    # Experiment entry points (YAML)
+  worlds/       # World configuration (YAML)
+  mechanisms/   # Mechanism configuration (YAML)
+src/karma_pp/
+  core/         # Abstract interfaces (Agent, Mechanism, World, Population, Simulation)
+  impl/
+    agents/     # TruthfulResourceAgent, RandomResourceAgent, QLearningResourceAgent, OptimalBiddingResourceAgent
+    mechanisms/ # KarmaMechanism, BenevolentDictatorMechanism
+    worlds/     # ResourceWorld
+  utils/        # Metrics (efficiency, fairness, Markov measures)
+  cli/          # Click commands (run, vis)
+tests/          # pytest test suite
+```
+
+## Adding a new scenario
+
+1. Create a scenario YAML in `data/scenarios/`. Reference world and mechanism files using paths **relative to the scenario file** (e.g. `../worlds/my_world.yaml`).
+2. Create or reuse world/mechanism YAMLs in `data/worlds/` and `data/mechanisms/`.
+3. Run with `kpp run --scenario data/scenarios/my_scenario.yaml`.

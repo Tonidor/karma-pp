@@ -25,6 +25,7 @@ dependencies = [
     "click",
     "seaborn",
     "cvxpy",
+    "duckdb",
 ]
 
 [project.optional-dependencies]

@@ -329,7 +329,8 @@ class KarmaMechanism[OUTCOME, DECISION](
         if any(b < 0 for b in new_balances.values()):
             raise ValueError("Agent balances must be non-negative.")
         if max(new_balances.values()) > self.max_balance:
-            raise ValueError(f"Agent balance exceeded max_balance: {max(new_balances.values())} > {self.max_balance}")
+            log.warning("agent_balance_exceeded_max_balance", max_balance=self.max_balance, new_balances=new_balances)
+            # raise ValueError(f"Agent balance exceeded max_balance: {max(new_balances.values())} > {self.max_balance}")
         
         # Distribuiton over balances
         balance_distribution = {

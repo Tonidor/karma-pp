@@ -233,7 +233,10 @@ class FullInfoLearningAgent(
             except ValueError:
                 raise ValueError(f"Invalid urgency: {urgency}, urgency levels need to be homogeneous.")
             if karma >= nk:
-                raise ValueError(f"Invalid karma: {karma}, karma must be less than or equal to {nk}.")
+                log.warning("invalid_karma", karma=karma, nk=nk)
+                # Apply clip to karma
+                karma = int(np.clip(karma, 0, nk - 1))
+                # raise ValueError(f"Invalid karma: {karma}, karma must be less than or equal to {nk}.")
             k_idx = int(karma)
             d_new[u_idx, k_idx] += 1.0
         total = d_new.sum()

@@ -4,6 +4,7 @@ structlog
 click
 seaborn
 cvxpy
+duckdb
 
 [dev]
 pytest>=7.0
