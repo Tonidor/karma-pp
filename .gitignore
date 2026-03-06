@@ -2,3 +2,7 @@
 __pycache__/
 
 .DS_Store
+
+# temporarily ignore data/karma.db and data/policies
+data/karma.db
+data/policies/

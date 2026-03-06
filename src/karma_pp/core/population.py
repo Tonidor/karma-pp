@@ -44,6 +44,7 @@ class Population[
             self.model_registry[model_id] = shared_model
             self.agent_model_map.update({agent_id_counter + i: model_id for i in range(cfg["n_agents"])})
             agent_id_counter += cfg["n_agents"]
+
         log.debug("population_initialized", n_agents=len(self.agent_ids), agent_models=self.model_registry.keys())
 
     @property
@@ -64,6 +65,7 @@ class Population[
         for agent_id, model_id in self.agent_model_map.items():
             model = self.model_registry[model_id]
             agent_state = model.initialize(
+                agent_id=agent_id,
                 world_dynamics=world_dynamics,
                 mechanism_dynamics=mechanism_dynamics,
                 rng=rng,
@@ -177,19 +179,22 @@ class Population[
         rewards: dict[int, float | None],
         timestep: int,
         rng: np.random.Generator,
-    ) -> PopulationState[AGENT_PRIVATE, POLICY_STATE]:
+    ) -> tuple[PopulationState[AGENT_PRIVATE, POLICY_STATE], bool]:
         """Adapt the population to the observation."""
         new_agent_states: dict[int, AgentState[AGENT_PRIVATE, POLICY_STATE]] = {}
+        has_converged: dict[int, bool] = {}
         for agent_id, state in population_state.agent_states.items():
             model = self.model_registry[self.agent_model_map[agent_id]]
-            resolution = resolutions[agent_id]
-            new_state = model.adapt(
+            new_state, converged = model.adapt(
+                agent_id=agent_id,
                 previous=state,
                 observation=observations[agent_id],
-                resolution=resolution,
+                resolution=resolutions[agent_id],
                 reward=rewards[agent_id],
                 timestep=timestep,
                 rng=rng,
             )
             new_agent_states[agent_id] = new_state
-        return PopulationState[AGENT_PRIVATE, POLICY_STATE](new_agent_states)
+            has_converged[agent_id] = converged
+        population_converged = all(has_converged.values())
+        return PopulationState[AGENT_PRIVATE, POLICY_STATE](new_agent_states), population_converged

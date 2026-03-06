@@ -20,6 +20,7 @@ class TruthfulResourceAgent[MECHANISM_STATE](
 
     def _initialize_policy(
         self,
+        agent_id: int,
         world_dynamics: ResourceWorldDynamics,
         mechanism_dynamics: object,
         rng: np.random.Generator,
@@ -47,16 +48,20 @@ class TruthfulResourceAgent[MECHANISM_STATE](
         observation: ResourceAgentObservation,
         rng: np.random.Generator,
     ) -> list[Reward]:
-        urgency = int(agent_state.private)
+        idx = int(agent_state.private)
+        if idx < 0 or idx >= len(self.urgency_levels):
+            raise ValueError(f"Urgency index {idx} out of bounds for configured urgency_levels.")
+        urgency = int(self.urgency_levels[idx])
         return [self._outcome_reward(urgency, outcome) for outcome in outcomes]
 
     def adapt(
         self,
+        agent_id: int,
         previous: AgentState[int, PolicyState],
         observation: ResourceAgentObservation,
         resolution: Resolution[Outcome],
         reward: float,
         timestep: int,
         rng: np.random.Generator,
-    ) -> AgentState[int, PolicyState]:
-        return previous
+    ) -> tuple[AgentState[int, PolicyState], bool]:
+        return previous, False

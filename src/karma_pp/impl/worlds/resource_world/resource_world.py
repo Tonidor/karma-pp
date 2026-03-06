@@ -54,6 +54,7 @@ class ResourceWorld[PRIVATE_STATE, REPORT](
         self,
         collective_size_distribution: dict[int, float],
         resource_capacities: list[int],
+        allocate_all_resources: bool = True,
     ) -> None:
         """Initialize a resource world with a distribution over collective sizes.
 
@@ -72,7 +73,8 @@ class ResourceWorld[PRIVATE_STATE, REPORT](
 
         self.resource_capacities = resource_capacities
         self.resource_count = len(resource_capacities)
-
+        self.allocate_all_resources = allocate_all_resources
+        
     def initialize(
         self,
         agent_ids: list[int],
@@ -200,6 +202,13 @@ class ResourceWorld[PRIVATE_STATE, REPORT](
 
     def _is_feasible(self, decision: Decision) -> bool:
         """Check if allocation is feasible given resource capacities."""
+        if self.allocate_all_resources:
+            # All resources must be fully allocated: exactly match capacities.
+            return all(
+                len(decision[r]) == self.resource_capacities[r]
+                for r in range(self.resource_count)
+            )
+        # Only require that allocations do not exceed capacities.
         return all(
             len(decision[r]) <= self.resource_capacities[r]
             for r in range(self.resource_count)

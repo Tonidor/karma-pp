@@ -1,6 +1,7 @@
 import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
+import re
 
 def plot_access_fairness_vs_efficiency(
     access_fairness: list[float],
@@ -18,13 +19,16 @@ def plot_access_fairness_vs_efficiency(
     sns.set(font_scale=1.5)
     sns.set_context("paper", font_scale=1.5, rc={"lines.linewidth": 2.5})
 
+    # Scale access fairness to 10^{-2} for nicer axis range, matching paper plots.
+    scale = 1e2
+
     fig, ax = plt.subplots(figsize=(10, 6))
 
     if sweep_values is not None and len(sweep_values) == len(efficiency):
         # Parameter sweep: line + circles, blue-to-yellow colormap
         sweep_arr = np.asarray(sweep_values)
         eff_arr = np.asarray(efficiency)
-        fair_arr = np.asarray(access_fairness)
+        fair_arr = np.asarray(access_fairness) * scale
         order = np.argsort(sweep_arr)
         eff_ordered = eff_arr[order]
         fair_ordered = fair_arr[order]
@@ -64,7 +68,7 @@ def plot_access_fairness_vs_efficiency(
         for i, (eff, fair, label) in enumerate(zip(efficiency, access_fairness, labels)):
             ax.scatter(
                 eff,
-                fair,
+                fair * scale,
                 c=colors[i % len(colors)],
                 marker=markers[i % len(markers)],
                 s=150,
@@ -75,7 +79,7 @@ def plot_access_fairness_vs_efficiency(
             )
 
     ax.set_xlabel("Efficiency", fontsize=14)
-    ax.set_ylabel("Access Fairness", fontsize=14)
+    ax.set_ylabel("Access Fairness ($\\times 10^{-2}$)", fontsize=14)
     ax.set_title("Efficiency vs. Access Fairness", fontsize=16, fontweight="bold")
     ax.legend(loc="best", fontsize=12)
     ax.grid(True, alpha=0.3)
@@ -90,114 +94,139 @@ def plot_efficiency_fairness_comparison(
     labels: list[str],
     save_path: str = "data/plots/efficiency_fairness_comparison.png",
 ) -> None:
-    """Efficiency vs access fairness for Random, Optimal, Dictator, and Q variants."""
+    """Efficiency vs access fairness for gamma sweep + baseline mechanisms.
+
+    - Gamma sweep (labels like \"γ=0.80\" or \"gamma=0.80\"):
+      drawn as circles, connected by a line, colored from blue (low γ)
+      to yellow (high γ).
+    - Coin toss: purple square.
+    - Turn-taking: green triangle.
+    - Benevolent dictator: red star.
+    """
     sns.set_theme(style="whitegrid")
     sns.set(font_scale=1.5)
     sns.set_context("paper", font_scale=1.5, rc={"lines.linewidth": 2.5})
 
+    # Scale access fairness to 10^{-2} for readability, matching paper-style axes.
+    scale = 1e2
+
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    random_indices = [i for i, label in enumerate(labels) if label.strip().lower() == "random"]
-    optimal_indices = [i for i, label in enumerate(labels) if label.strip().lower() == "optimal"]
-    dictator_indices = [
-        i for i, label in enumerate(labels) if label.strip().lower() == "benevolent dictator"
-    ]
-    q_indices = [i for i, label in enumerate(labels) if label.strip().lower().startswith("q ")]
+    # --- Gamma sweep: any label containing a numeric gamma value ---------------
+    gamma_indices: list[int] = []
+    gamma_values: list[float] = []
+    float_pattern = re.compile(
+        r"[-+]?(?:\d+\.?\d*|\d*\.?\d+)(?:[eE][-+]?\d+)?"
+    )  # robust float matcher
 
-    # Q-learners: same marker family, diverging colors and connecting line
-    if q_indices:
-        cmap = plt.get_cmap("RdYlBu_r")
-        q_colors = [cmap(i / max(1, len(q_indices) - 1)) for i in range(len(q_indices))]
-        eff_q = [efficiency[i] for i in q_indices]
-        fair_q = [access_fairness[i] for i in q_indices]
+    for i, label in enumerate(labels):
+        txt = label.strip()
+        lower = txt.lower()
+
+        # Fast path for labels like \"γ=0.80\" or \"gamma=0.80\"
+        if lower.startswith("γ=") or lower.startswith("gamma="):
+            try:
+                val = float(txt.split("=", 1)[1])
+            except ValueError:
+                continue
+            gamma_indices.append(i)
+            gamma_values.append(val)
+            continue
+
+        # More general: any label containing \"gamma\" followed by a number,
+        # e.g. \"2000x2_full_info_gamma_0.80\".
+        if "gamma" in lower:
+            tail = lower.split("gamma", 1)[1]
+            match = float_pattern.search(tail)
+            if match:
+                try:
+                    val = float(match.group(0))
+                except ValueError:
+                    continue
+                gamma_indices.append(i)
+                gamma_values.append(val)
+
+    if gamma_indices:
+        sweep_arr = np.asarray(gamma_values)
+        eff_arr = np.asarray([efficiency[i] for i in gamma_indices])
+        fair_arr = np.asarray([access_fairness[i] for i in gamma_indices]) * scale
+        labels_gamma = [labels[i] for i in gamma_indices]
+
+        order = np.argsort(sweep_arr)
+        eff_ordered = eff_arr[order]
+        fair_ordered = fair_arr[order]
+        sweep_ordered = sweep_arr[order]
+        labels_gamma_ordered = [labels_gamma[i] for i in order]
+
+        cmap = plt.get_cmap("YlGnBu_r")  # blue (low) -> yellow (high)
+        norm = plt.Normalize(vmin=sweep_ordered.min(), vmax=sweep_ordered.max())
+        colors = [cmap(norm(v)) for v in sweep_ordered]
+
         ax.plot(
-            eff_q,
-            fair_q,
+            eff_ordered,
+            fair_ordered,
             color="gray",
             linestyle="-",
             linewidth=1.5,
             alpha=0.7,
             zorder=0,
         )
-        for rank, idx in enumerate(q_indices):
+        for i, (eff, fair, label_gamma) in enumerate(
+            zip(eff_ordered, fair_ordered, labels_gamma_ordered)
+        ):
             ax.scatter(
-                efficiency[idx],
-                access_fairness[idx],
-                c=[q_colors[rank]],
+                eff,
+                fair,
+                c=[colors[i]],
                 marker="o",
                 s=150,
-                label=labels[idx],
+                label=label_gamma,
                 edgecolors="black",
                 linewidths=1.5,
                 alpha=0.9,
                 zorder=1,
             )
 
-    # Random: dark circle
-    for idx in random_indices:
-        ax.scatter(
-            efficiency[idx],
-            access_fairness[idx],
-            c="#2f2f2f",
-            marker="s",
-            s=150,
-            label=labels[idx],
-            edgecolors="black",
-            linewidths=1.5,
-            alpha=0.9,
-            zorder=2,
-        )
-
-    # Optimal: distinct yellow star
-    for idx in optimal_indices:
-        ax.scatter(
-            efficiency[idx],
-            access_fairness[idx],
-            c="#ffd60a",
-            marker="*",
-            s=260,
-            label=labels[idx],
-            edgecolors="black",
-            linewidths=1.5,
-            alpha=0.95,
-            zorder=3,
-        )
-
-    # Benevolent Dictator: red star
-    for idx in dictator_indices:
-        ax.scatter(
-            efficiency[idx],
-            access_fairness[idx],
-            c="#d00000",
-            marker="*",
-            s=280,
-            label=labels[idx],
-            edgecolors="black",
-            linewidths=1.5,
-            alpha=0.95,
-            zorder=4,
-        )
-
-    # Fallback style for any additional labels.
-    handled = set(random_indices + optimal_indices + dictator_indices + q_indices)
+    # --- Baseline mechanisms --------------------------------------------------
+    handled = set(gamma_indices)
     for idx, label in enumerate(labels):
         if idx in handled:
             continue
+        txt = label.strip()
+        lower = txt.lower().replace("_", " ")
+
+        # Coin toss variants: "coin toss", "200x2_coin_toss", etc.
+        if "coin" in lower and "toss" in lower:
+            color = "#FFD700"  # yellow square
+            marker = "s"
+        # Turn-taking variants: "turn taking", "turn-taking", "200x2_turn_taking", etc.
+        elif "turn" in lower and "taking" in lower:
+            color = "#2ca02c"  # green triangle
+            marker = "^"
+        # Benevolent dictator variants: "benevolent dictator", "200x2_benevolent_dictator", etc.
+        elif "benevolent" in lower and "dictator" in lower:
+            color = "#d00000"  # red star
+            marker = "*"
+        else:
+            # Fallback style (shouldn't be needed for current use)
+            color = "#1f77b4"
+            marker = "o"
+
         ax.scatter(
             efficiency[idx],
-            access_fairness[idx],
-            c="#1f77b4",
-            marker="^",
-            s=150,
+            access_fairness[idx] * scale,
+            c=color,
+            marker=marker,
+            s=180 if marker == "*" else 150,
             label=label,
             edgecolors="black",
             linewidths=1.5,
             alpha=0.9,
-            zorder=1,
+            zorder=2 if marker != "*" else 3,
         )
 
     ax.set_xlabel("Efficiency", fontsize=14)
-    ax.set_ylabel("Access Fairness", fontsize=14)
+    ax.set_ylabel("Access Fairness ($\\times 10^{-2}$)", fontsize=14)
     ax.set_title("Efficiency vs. Access Fairness", fontsize=16, fontweight="bold")
     ax.legend(loc="best", fontsize=10)
     ax.grid(True, alpha=0.3)

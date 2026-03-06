@@ -74,7 +74,8 @@ def run_simulation(
     )]
 
     for t in range(1, steps + 1):
-        log.info("timestep", timestep=t)
+        if t % 20 == 0:
+            log.info("timestep", timestep=t)
 
         # Form collectives
         collectives: dict[int, list[int]] = world.get_collectives(
@@ -92,7 +93,7 @@ def run_simulation(
         )
 
         # Adapt
-        population_state = population.adapt(
+        population_state, population_converged = population.adapt(
             population_state=population_state,
             observations=observations,
             resolutions=prev_resolutions,
@@ -173,6 +174,9 @@ def run_simulation(
         results.append(result)
 
         log.debug("timestep_complete")
+        if population_converged:
+            log.info("population_converged", timestep=t)
+            break
 
     log.info("simulation_finished", total_steps=len(results) - 1)
     return results

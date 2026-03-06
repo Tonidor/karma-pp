@@ -59,14 +59,17 @@ class ResourceAgent[
 
     def initialize(
         self,
+        agent_id: int,
         world_dynamics: ResourceWorldDynamics,
         mechanism_dynamics: object,
         rng: np.random.Generator,
     ) -> AgentState[int, POLICY_STATE]:
         if self.n_resources != len(world_dynamics.resource_capacities):
             raise ValueError("reward_per_resource length must match world resource_capacities.")
-        initial_private = int(self.urgency_levels[self.initial_state])
-        policy_state = self._initialize_policy(world_dynamics, mechanism_dynamics, rng)
+        # Private state stores the Markov urgency *index*; actual urgency is
+        # looked up via `self.urgency_levels[private]` wherever needed.
+        initial_private = int(self.initial_state)
+        policy_state = self._initialize_policy(agent_id, world_dynamics, mechanism_dynamics, rng)
         return AgentState(private=initial_private, policy=policy_state)
 
     def _outcome_reward(self, urgency: Urgency, outcome: Outcome) -> float:
@@ -86,7 +89,11 @@ class ResourceAgent[
         observation: ResourceAgentObservation,
         resolution: RESOLUTION,
     ) -> float:
-        return self._outcome_reward(agent_state.private, resolution.selected_outcome)
+        idx = int(agent_state.private)
+        if idx < 0 or idx >= len(self.urgency_levels):
+            raise ValueError(f"Urgency index {idx} out of bounds for configured urgency_levels.")
+        urgency = int(self.urgency_levels[idx])
+        return self._outcome_reward(urgency, resolution.selected_outcome)
 
     def get_action(
         self,
@@ -112,13 +119,17 @@ class ResourceAgent[
         resolution: RESOLUTION,
         rng: np.random.Generator,
     ) -> AgentState[Urgency, POLICY_STATE]:
-        current_state_idx = self._state_idx_from_urgency(previous.private)
+        current_state_idx = int(previous.private)
+        if current_state_idx < 0 or current_state_idx >= len(self.transition_matrix):
+            raise ValueError(
+                f"Urgency index {current_state_idx} out of bounds for transition_matrix."
+            )
         next_private_idx = rng.choice(
             len(self.transition_matrix[current_state_idx]),
             p=self.transition_matrix[current_state_idx],
         )
         return AgentState(
-            private=self.urgency_levels[next_private_idx],
+            private=int(next_private_idx),
             policy=previous.policy,
         )
 
@@ -137,6 +148,7 @@ class ResourceAgent[
     @abstractmethod
     def _initialize_policy(
         self,
+        agent_id: int,
         world_dynamics: ResourceWorldDynamics,
         mechanism_dynamics: object,
         rng: np.random.Generator,
@@ -173,12 +185,13 @@ class ResourceAgent[
     @abstractmethod
     def adapt(
         self,
+        agent_id: int,
         previous: AgentState[Urgency, POLICY_STATE],
         observation: ResourceAgentObservation,
         resolution: RESOLUTION,
         reward: float,
         timestep: int,
         rng: np.random.Generator,
-    ) -> AgentState[Urgency, POLICY_STATE]:
+    ) -> tuple[AgentState[Urgency, POLICY_STATE], bool]:
         """Update learning/adaptation state."""
         ...

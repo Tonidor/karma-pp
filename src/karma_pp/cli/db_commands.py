@@ -5,6 +5,8 @@ from pathlib import Path
 
 import click
 import yaml
+import json
+import numpy as np
 
 from karma_pp.db.base import Database
 from karma_pp.logging_config import configure_logging
@@ -1415,3 +1417,106 @@ def delete_exp_groups(database, repo, ids):
 
     click.echo("\nRemaining in database:")
     click.echo(f"  Experiment Groups: {remaining_groups}")
+
+
+@db.command(name="export-policies")
+@click.argument("experiment", type=int)
+@click.option(
+    "--log-level",
+    "-l",
+    default="INFO",
+    show_default=True,
+    type=click.Choice(
+        ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], case_sensitive=False
+    ),
+    help="Set the logging level.",
+)
+def export_policies(experiment, log_level):
+    """Export agent policies at the last timestep of an experiment to NumPy files.
+
+    For each agent in the population_state at the final step, this command
+    saves its policy π (if present) to:
+
+        data/policies/[EXP_ID]_agent_[AGENT_ID]_policy.npy
+
+    Policies that are ClonePolicyState entries (i.e. only contain a
+    reference_agent_id and no π) are skipped.
+    """
+    configure_logging(level=log_level)
+    try:
+        with Database() as database:
+            exp = database.experiment.get(experiment)
+            if not exp:
+                click.echo(f"❌ Experiment {experiment} not found.")
+                return
+
+            metrics = database.metric.filter_by(exp_id=experiment)
+            pop_metrics = [m for m in metrics if m.metric_name == "population_state"]
+            if not pop_metrics:
+                click.echo("❌ No population_state metrics found for this experiment.")
+                return
+
+            # Use the last available timestep.
+            last_metric = max(pop_metrics, key=lambda m: m.step)
+
+            try:
+                pop_state = json.loads(last_metric.metric_value)
+            except (json.JSONDecodeError, TypeError) as e:
+                click.echo(f"❌ Could not parse population_state metric: {e}")
+                return
+
+            agent_states = pop_state.get("agent_states")
+            if not isinstance(agent_states, dict):
+                click.echo("❌ population_state.agent_states is missing or invalid.")
+                return
+
+            out_dir = Path("data/policies")
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            saved_count = 0
+            for aid_str, state in agent_states.items():
+                if not isinstance(state, dict):
+                    continue
+                policy = state.get("policy")
+                if not isinstance(policy, dict):
+                    continue
+
+                # Skip ClonePolicyState entries which only carry a reference.
+                if "reference_agent_id" in policy and "pi" not in policy and "d" not in policy:
+                    continue
+
+                pi_raw = policy.get("pi")
+                if pi_raw is None:
+                    # Only export policies that explicitly store π.
+                    continue
+
+                try:
+                    pi_arr = np.asarray(pi_raw, dtype=float)
+                except (TypeError, ValueError):
+                    continue
+
+                try:
+                    aid = int(aid_str)
+                except (TypeError, ValueError):
+                    # Fall back to string id in the filename if conversion fails.
+                    aid = aid_str  # type: ignore[assignment]
+
+                filepath = out_dir / f"{experiment}_agent_{aid}_policy.npy"
+                np.save(filepath, pi_arr)
+                saved_count += 1
+
+            if saved_count == 0:
+                click.echo(
+                    "❌ No non-clone policies with π found at the last timestep for "
+                    f"experiment {experiment}."
+                )
+            else:
+                click.echo(
+                    f"💾 Saved {saved_count} policy file(s) to: {out_dir.resolve()}"
+                )
+
+    except Exception as e:  # pragma: no cover
+        click.echo(f"❌ Error exporting policies: {e}")
+        import traceback
+
+        traceback.print_exc()

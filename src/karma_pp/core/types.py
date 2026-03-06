@@ -56,3 +56,7 @@ class CollectiveAction[OUTCOME, DECISION]:
     signals: list[list[int | float]]
     decisions_to_outcomes: list[list[int]]
     agent_outcomes: list[list[OUTCOME]]
+
+@dataclass(frozen=True)
+class ClonePolicyState:
+    reference_agent_id: int

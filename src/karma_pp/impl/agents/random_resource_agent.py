@@ -30,6 +30,7 @@ class RandomResourceAgent(
 
     def _initialize_policy(
         self,
+        agent_id: int,
         world_dynamics: ResourceWorldDynamics,
         mechanism_dynamics: KarmaDynamics,
         rng: np.random.Generator,
@@ -63,11 +64,12 @@ class RandomResourceAgent(
 
     def adapt(
         self,
+        agent_id: int,
         previous: AgentState[int, PolicyState],
         observation: RandomObservation,
         resolution: KarmaResolution,
         reward: float,
         timestep: int,
         rng: np.random.Generator,
-    ) -> AgentState[int, PolicyState]:
-        return previous
+    ) -> tuple[AgentState[int, PolicyState], bool]:
+        return previous, False

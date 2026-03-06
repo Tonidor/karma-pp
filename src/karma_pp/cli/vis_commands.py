@@ -1,13 +1,22 @@
-import copy
+"""Visualization commands for database-backed experiments.
+
+All plots use data from the database only (experiment IDs or group IDs).
+No simulation execution is performed in this module.
+"""
+
+import json
+from datetime import datetime
 from pathlib import Path
+from typing import Optional, Tuple
 
 import click
+import matplotlib.pyplot as plt
 import numpy as np
-import structlog
-import yaml
+import pandas as pd
+import seaborn as sns
 
+from karma_pp.db.base import Database
 from karma_pp.logging_config import configure_logging
-from karma_pp.core.simulation import create_components, run_simulation
 from karma_pp.utils.agent_measures import (
     get_markov_lambda_star,
     get_markov_spike_index,
@@ -15,34 +24,328 @@ from karma_pp.utils.agent_measures import (
     get_markov_surplus_efficiency,
     get_markov_threshold,
 )
-from karma_pp.utils.system_measures import (
-    get_access_fairness,
-    get_efficiency,
-    nash_welfare,
-)
-from karma_pp.impl.agents.full_info_learning_agent import FullInfoLearningAgent
 from karma_pp.utils.plots import (
     plot_access_fairness_vs_efficiency,
     plot_efficiency_fairness_comparison,
-    plot_efficiency_fairness_mechanisms,
     plot_full_info_policy_and_distribution,
     plot_markov_stationary_violin,
     plot_metrics_table,
     plot_nash_welfare,
     plot_smoothed_reward_over_time,
 )
+from karma_pp.utils.system_measures import (
+    get_access_fairness,
+    get_efficiency,
+    nash_welfare,
+)
 
-log = structlog.get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# Shared DB extraction helpers (no simulation execution)
+# ---------------------------------------------------------------------------
 
 
-def _default_labels(scenarios: tuple[str, ...]) -> list[str]:
-    return [Path(scenario).stem for scenario in scenarios]
+def _validate_and_resolve_experiments(
+    exp_id: Optional[int], group_id: Optional[int]
+) -> Tuple[Optional[list[int]], Optional[object], Optional[str]]:
+    """
+    Validate experiment ID or group ID inputs and return list of experiment IDs.
+    Returns (exp_ids, group_obj_or_None, error_message_or_None).
+    """
+    if not exp_id and not group_id:
+        return None, None, (
+            "❌ No experiment ID or group ID provided. "
+            "Usage: kpp vis <command> <exp_id> OR kpp vis <command> --group-id <group_id>"
+        )
+
+    if exp_id and group_id:
+        return None, None, "❌ Please provide either an experiment ID OR a group ID, not both."
+
+    if group_id:
+        try:
+            with Database() as database:
+                group = database.exp_group.get(group_id)
+                if not group:
+                    return None, None, f"❌ Experiment group {group_id} not found."
+                exp_ids = database.exp_group.list_members(group_id)
+                if not exp_ids:
+                    return None, None, f"❌ No experiments found in group {group_id}."
+                click.echo(
+                    f"📊 Using {len(exp_ids)} experiments from group {group_id} "
+                    f"('{group.label}'): {exp_ids}"
+                )
+                return exp_ids, group, None
+        except Exception as e:  # pragma: no cover
+            return None, None, f"❌ Error accessing group {group_id}: {e}"
+
+    exp_ids = [exp_id]  # type: ignore[list-item]
+    try:
+        with Database() as database:
+            experiment = database.experiment.get(exp_id)  # type: ignore[arg-type]
+            if not experiment:
+                return None, None, f"❌ Experiment {exp_id} not found."
+            click.echo(f"📊 Using experiment {exp_id}: {experiment.name}")
+            return exp_ids, None, None
+    except Exception as e:  # pragma: no cover
+        return None, None, f"❌ Error accessing experiment {exp_id}: {e}"
+
+
+def _resolve_efficiency_fairness_points(
+    exp_ids_arg: tuple[int, ...],
+    group_ids_arg: tuple[int, ...],
+) -> Tuple[list[tuple[list[int], str]], Optional[str]]:
+    """
+    Resolve (exp_ids, label) for each point to plot.
+    - Single/multiple exp_ids: one point per experiment, label=str(exp_id)
+    - Single group_id: one point per experiment in group, label=str(exp_id)
+    - Multiple group_ids: one point per group (averaged), label=group.label
+    Returns (points, error) where points = [(exp_ids, label), ...].
+    """
+    if not exp_ids_arg and not group_ids_arg:
+        return [], "❌ Provide exp_ids or --group-id."
+    if exp_ids_arg and group_ids_arg:
+        return [], "❌ Provide either exp_ids OR --group-id, not both."
+
+    try:
+        with Database() as database:
+            if exp_ids_arg:
+                points = []
+                for eid in exp_ids_arg:
+                    exp = database.experiment.get(eid)
+                    if not exp:
+                        return [], f"❌ Experiment {eid} not found."
+                    points.append(([eid], exp.name))
+                return points, None
+
+            # group_ids
+            points = []
+            for gid in group_ids_arg:
+                group = database.exp_group.get(gid)
+                if not group:
+                    return [], f"❌ Group {gid} not found."
+                members = database.exp_group.list_members(gid)
+                if not members:
+                    return [], f"❌ No experiments in group {gid}."
+                if len(group_ids_arg) == 1:
+                    for eid in members:
+                        exp = database.experiment.get(eid)
+                        label = exp.name if exp else str(eid)
+                        points.append(([eid], label))
+                else:
+                    points.append((members, group.label))
+            return points, None
+    except Exception as e:  # pragma: no cover
+        return [], str(e)
+
+
+def _load_rewards_access_for_experiment(
+    database: object, eid: int
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
+    """
+    Load rewards_by_step, access_by_step, and weights for one experiment.
+    Returns (rewards_arr, access_arr, weights) or (None, None, None) on failure.
+    rewards_arr: (n_steps, n_agents), access_arr: (n_steps, n_agents), weights: (n_agents,)
+    """
+    metrics = database.metric.filter_by(exp_id=eid)
+    if not metrics:
+        return None, None, None
+
+    rewards_map = {m.step: m for m in metrics if m.metric_name == "rewards"}
+    collectives_map = {m.step: m for m in metrics if m.metric_name == "collectives"}
+    reports_map = {m.step: m for m in metrics if m.metric_name == "reports"}
+
+    all_steps = sorted(
+        set(rewards_map.keys()) & set(collectives_map.keys()) & set(reports_map.keys())
+    )
+
+    rewards_by_step: list[list[float]] = []
+    access_by_step: list[list[float]] = []
+
+    for step in all_steps:
+        try:
+            rewards = json.loads(rewards_map[step].metric_value)
+            collectives = json.loads(collectives_map[step].metric_value)
+            reports = json.loads(reports_map[step].metric_value)
+        except json.JSONDecodeError:
+            continue
+
+        if not isinstance(rewards, dict) or any(v is None for v in rewards.values()):
+            continue
+
+        agent_ids = sorted(int(aid) for aid in rewards.keys())
+        rewards_row = [float(rewards.get(str(aid), 0) or 0) for aid in agent_ids]
+
+        agent_to_collective: dict[int, int] = {}
+        if isinstance(collectives, dict):
+            for cid_str, agent_list in collectives.items():
+                try:
+                    cid = int(cid_str)
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(agent_list, list):
+                    for aid in agent_list:
+                        agent_to_collective[int(aid)] = cid
+
+        access_row: list[float] = []
+        for aid in agent_ids:
+            cid = agent_to_collective.get(aid)
+            if cid is None:
+                access_row.append(0.0)
+                continue
+            report = reports.get(str(cid)) if isinstance(reports, dict) else None
+            if not isinstance(report, dict):
+                access_row.append(0.0)
+                continue
+            selected = report.get("selected_outcomes")
+            if not isinstance(selected, dict):
+                access_row.append(0.0)
+                continue
+            outcome = selected.get(str(aid))
+            if outcome is None:
+                access_row.append(0.0)
+                continue
+            outcome_arr = np.asarray(outcome, dtype=float)
+            has_access = bool(np.any(outcome_arr > 0))
+            access_row.append(1.0 if has_access else 0.0)
+
+        rewards_by_step.append(rewards_row)
+        access_by_step.append(access_row)
+
+    if not rewards_by_step or not access_by_step:
+        return None, None, None
+
+    rewards_arr = np.asarray(rewards_by_step, dtype=float)
+    access_arr = np.asarray(access_by_step, dtype=float)
+    n_agents = rewards_arr.shape[1]
+    weights = np.ones(n_agents, dtype=float)
+    return rewards_arr, access_arr, weights
+
+
+def _load_nash_inputs_for_experiment(
+    database: object, eid: int
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
+    """
+    Load allocation, allocated_urgencies, and weights for nash_welfare.
+    Returns (allocation, allocated_urgencies, weights) or (None, None, None).
+    """
+    metrics = database.metric.filter_by(exp_id=eid)
+    if not metrics:
+        return None, None, None
+
+    collectives_map = {m.step: m for m in metrics if m.metric_name == "collectives"}
+    reports_map = {m.step: m for m in metrics if m.metric_name == "reports"}
+    population_map = {m.step: m for m in metrics if m.metric_name == "population_state"}
+
+    all_steps = sorted(
+        set(collectives_map.keys()) & set(reports_map.keys()) & set(population_map.keys())
+    )
+    all_steps = [s for s in all_steps if s > 0]  # skip step 0
+
+    allocation: list[int] = []
+    allocation_row_indices: list[int] = []
+    urgencies_by_step: list[list[float]] = []
+
+    for step in all_steps:
+        try:
+            collectives = json.loads(collectives_map[step].metric_value)
+            reports = json.loads(reports_map[step].metric_value)
+            population_state = json.loads(population_map[step].metric_value)
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+        agent_states = population_state.get("agent_states") if isinstance(population_state, dict) else {}
+        if not isinstance(agent_states, dict):
+            continue
+
+        agent_ids = sorted(int(aid) for aid in agent_states.keys())
+        urgency_values = []
+        for aid in agent_ids:
+            state = agent_states.get(str(aid), {})
+            if isinstance(state, dict):
+                priv = state.get("private")
+                urgency_values.append(float(priv) if priv is not None else 0.0)
+            else:
+                urgency_values.append(0.0)
+
+        agent_to_collective: dict[int, int] = {}
+        if isinstance(collectives, dict):
+            for cid_str, agent_list in collectives.items():
+                try:
+                    cid = int(cid_str)
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(agent_list, list):
+                    for aid in agent_list:
+                        agent_to_collective[int(aid)] = cid
+
+        allocated_agent = None
+        for idx, aid in enumerate(agent_ids):
+            cid = agent_to_collective.get(aid)
+            if cid is None:
+                continue
+            report = reports.get(str(cid)) if isinstance(reports, dict) else None
+            if not isinstance(report, dict):
+                continue
+            selected = report.get("selected_outcomes")
+            if not isinstance(selected, dict):
+                continue
+            outcome = selected.get(str(aid))
+            if outcome is None:
+                continue
+            outcome_arr = np.asarray(outcome, dtype=float)
+            has_access = bool(np.any(outcome_arr > 0))
+            if has_access and allocated_agent is None:
+                allocated_agent = idx
+                break
+
+        row_idx = len(urgencies_by_step)
+        urgencies_by_step.append(urgency_values)
+        if allocated_agent is not None:
+            allocation.append(allocated_agent)
+            allocation_row_indices.append(row_idx)
+
+    if not allocation or not urgencies_by_step:
+        return None, None, None
+
+    urgencies_arr = np.asarray(urgencies_by_step, dtype=float)
+    allocation_indices_arr = np.asarray(allocation_row_indices, dtype=int)
+    allocated_urgencies = urgencies_arr[allocation_indices_arr, :]
+    n_agents = urgencies_arr.shape[1]
+    weights = np.ones(n_agents, dtype=float)
+    return np.asarray(allocation, dtype=int), allocated_urgencies, weights
+
+
+def _load_balances_for_experiments(
+    database: object, exp_ids: list[int]
+) -> list[dict]:
+    """Load balance rows for all experiments. Returns list of {exp_id, step, agent_id, balance}."""
+    all_rows: list[dict] = []
+    for eid in exp_ids:
+        metrics = database.metric.filter_by(exp_id=eid)
+        mech_metrics = [m for m in metrics if m.metric_name == "mechanism_state"]
+        for metric in mech_metrics:
+            try:
+                state = json.loads(metric.metric_value)
+                balances = state.get("agent_balances")
+                if not isinstance(balances, dict):
+                    continue
+                step = metric.step
+                for aid, bal in sorted(balances.items(), key=lambda kv: int(kv[0])):
+                    all_rows.append({
+                        "exp_id": eid,
+                        "step": step,
+                        "agent_id": int(aid),
+                        "balance": float(bal),
+                    })
+            except (json.JSONDecodeError, ValueError, TypeError):
+                continue
+    return all_rows
 
 
 def _extract_markov_urgency_inputs(
     population_cfg: dict,
 ) -> tuple[list[np.ndarray], np.ndarray, list[np.ndarray]]:
-    """Expand agent type configs into per-agent transition matrices, weights, and urgency levels."""
+    """Expand agent type configs into per-agent transition matrices, weights, urgency levels."""
     try:
         agent_type_cfgs = population_cfg["parameters"]["agent_type_cfgs"]
     except KeyError as e:
@@ -53,7 +356,7 @@ def _extract_markov_urgency_inputs(
     transition_matrices: list[np.ndarray] = []
     weights: list[float] = []
     urgency_levels: list[np.ndarray] = []
-    for type_name, type_cfg in agent_type_cfgs.items():
+    for _type_name, type_cfg in agent_type_cfgs.items():
         try:
             n_agents = int(type_cfg["n_agents"])
             weight = float(type_cfg["weight"])
@@ -63,20 +366,18 @@ def _extract_markov_urgency_inputs(
             )
         except KeyError as e:
             raise click.ClickException(
-                f"Agent type {type_name!r} missing transition matrix config key: {e}. "
+                f"Agent type missing transition matrix config key: {e}. "
                 "Expected agent_model.parameters.transition_matrix."
             ) from e
         levels = type_cfg["agent_model"]["parameters"].get("urgency_levels")
         if levels is None:
             raise click.ClickException(
-                f"Agent type {type_name!r} missing required key "
-                "'agent_model.parameters.urgency_levels'."
+                "Agent type missing required key agent_model.parameters.urgency_levels."
             )
         levels_array = np.asarray(levels, dtype=float)
         if levels_array.shape[0] != transition_matrix.shape[0]:
             raise click.ClickException(
-                f"Agent type {type_name!r} has urgency_levels of length {levels_array.shape[0]} "
-                f"but transition matrix has {transition_matrix.shape[0]} states."
+                "urgency_levels length must match transition matrix size."
             )
         for _ in range(n_agents):
             transition_matrices.append(transition_matrix)
@@ -88,113 +389,18 @@ def _extract_markov_urgency_inputs(
     return transition_matrices, np.asarray(weights, dtype=float), urgency_levels
 
 
-def _extract_step_arrays(
-    results: list,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Extract access, reward, urgency, and allocated-agent arrays from results.
-
-    Rewards are taken from result.rewards (agent compute_reward), not recomputed.
-    Access and urgencies are derived from report selected_outcomes and population_state.
-    Returns allocation_row_indices so urgencies can be correctly sliced for nash_welfare.
-    """
-    if not results:
-        raise ValueError("No simulation results available.")
-
-    n_agents = results[0].population_state.n_agents
-    access_by_step: list[list[float]] = []
-    rewards_by_step: list[list[float]] = []
-    urgencies_by_step: list[list[float]] = []
-    allocation: list[int] = []
-    allocation_row_indices: list[int] = []
-
-    for result in results[1:]:
-        agent_ids = sorted(result.population_state.agent_states.keys())
-        if None in (result.rewards.get(aid) for aid in agent_ids):
-            continue
-        rewards_row = [float(result.rewards[aid]) for aid in agent_ids]
-        urgency_values = [float(result.population_state.agent_states[aid].private) for aid in agent_ids]
-
-        # Build agent_id -> collective_id map (supports multiple collectives per step)
-        agent_to_collective: dict[int, int] = {}
-        for cid, agent_list in result.collectives.items():
-            for aid in agent_list:
-                agent_to_collective[aid] = cid
-
-        access_row: list[float] = []
-        allocated_agent = None
-        for idx, aid in enumerate(agent_ids):
-            cid = agent_to_collective.get(aid)
-            if cid is None:
-                access_row.append(0.0)
-                continue
-            report = result.reports.get(cid)
-            if report is None:
-                access_row.append(0.0)
-                continue
-            selected_outcomes = getattr(report, "selected_outcomes", None)
-            if not isinstance(selected_outcomes, dict):
-                access_row.append(0.0)
-                continue
-            outcome = selected_outcomes.get(aid)
-            if outcome is None:
-                access_row.append(0.0)
-                continue
-            outcome_array = np.asarray(outcome, dtype=float)
-            has_access = bool(np.any(outcome_array > 0))
-            access_row.append(1.0 if has_access else 0.0)
-            if has_access and allocated_agent is None:
-                allocated_agent = idx
-
-        row_idx = len(access_by_step)
-        access_by_step.append(access_row)
-        rewards_by_step.append(rewards_row)
-        urgencies_by_step.append(urgency_values)
-        if allocated_agent is not None:
-            allocation.append(allocated_agent)
-            allocation_row_indices.append(row_idx)
-
-    if not access_by_step or not rewards_by_step:
-        raise ValueError("Could not extract plot data from simulation results.")
-
-    urgencies_arr = np.asarray(urgencies_by_step, dtype=float)
-    allocation_arr = np.asarray(allocation, dtype=int)
-    allocation_indices_arr = np.asarray(allocation_row_indices, dtype=int)
-    allocated_urgencies = (
-        urgencies_arr[allocation_indices_arr, :] if allocation_indices_arr.size > 0 else np.empty((0, n_agents))
-    )
-    return (
-        np.asarray(access_by_step, dtype=float),
-        np.asarray(rewards_by_step, dtype=float),
-        urgencies_arr,
-        allocation_arr,
-        allocated_urgencies,
-    )
-
-
-def _extract_rewards_from_results(results: list) -> np.ndarray:
-    """Extract per-agent rewards per timestep from simulation results (result.rewards)."""
-    if not results or len(results) < 2:
-        raise ValueError("Need at least two results (initial + one step).")
-    agent_ids = sorted(results[1].rewards.keys())
-    rows = []
-    for result in results[1:]:
-        row = [result.rewards[aid] for aid in agent_ids]
-        rows.append(row)
-    return np.asarray(rows, dtype=float)
-
-
 def _compute_markov_metrics(
     world_cfg: dict,
     population_cfg: dict,
-    lambda_star: float | None,
+    lambda_star: Optional[float],
     delta_r: float,
 ) -> tuple[list[np.ndarray], list[np.ndarray], list[float], list[float], list[float], float]:
-    """Compute Markov metrics: stationary, urgency_levels, thresholds, spike_indices, surplus_efficiency, lambda_star."""
+    """Compute Markov metrics from configs."""
     try:
         resource_count = float(len(world_cfg["parameters"]["resource_capacities"]))
     except KeyError as e:
         raise click.ClickException(
-            f"World config missing expected key for resource_capacities: {e}."
+            f"World config missing resource_capacities: {e}."
         ) from e
 
     transition_matrices, weights, urgency_levels = _extract_markov_urgency_inputs(population_cfg)
@@ -233,678 +439,733 @@ def _compute_markov_metrics(
     return stationary, urgency_levels, thresholds, spike_indices, surplus_efficiency, lambda_star_used
 
 
-def _load_scenario_cfgs(scenario: str) -> tuple[dict, dict, dict]:
-    """Load world, population, and mechanism configs directly from a scenario YAML."""
-    scenario_path = Path(scenario)
-    with open(scenario_path, "r") as f:
-        scenario_cfg = yaml.safe_load(f)
-
-    scenario_dir = scenario_path.parent
-    with open(scenario_dir / scenario_cfg["world_file"], "r") as f:
-        world_cfg = yaml.safe_load(f)
-    with open(scenario_dir / scenario_cfg["mechanism_file"], "r") as f:
-        mechanism_cfg = yaml.safe_load(f)
-
+def _load_experiment_configs(database: object, exp_id: int) -> Tuple[dict, dict]:
+    """Load world_cfg and population_cfg from DB for an experiment."""
+    exp = database.experiment.get(exp_id)
+    if not exp:
+        raise click.ClickException(f"Experiment {exp_id} not found.")
+    world_row = database.world.get(exp.world_hash)
+    if not world_row:
+        raise click.ClickException(f"World config for experiment {exp_id} not found.")
+    world_cfg = json.loads(world_row.json)
     population_cfg = {
-        "code": "karma_pp.core.population.Population",
         "parameters": {
-            "agent_type_cfgs": scenario_cfg["population"],
-        },
+            "agent_type_cfgs": database.population.to_scenario_population(exp.population_hash),
+        }
     }
-    return world_cfg, population_cfg, mechanism_cfg
+    return world_cfg, population_cfg
 
 
-def _mean_efficiency_and_fairness(
-    world_cfg: dict,
-    population_cfg: dict,
-    mechanism_cfg: dict,
-    steps: int,
-    n_runs: int,
-    seed_offset: int,
-    seed_base: int,
-) -> tuple[float, float]:
-    effs: list[float] = []
-    fairs: list[float] = []
-    for r in range(n_runs):
-        eff, fair = _run_scenario_and_metrics(
-            world_cfg,
-            population_cfg,
-            mechanism_cfg,
-            steps,
-            seed_base + seed_offset + r,
-        )
-        effs.append(eff)
-        fairs.append(fair)
-    return float(np.mean(effs)), float(np.mean(fairs))
+def _load_rewards_for_experiment(database: object, eid: int) -> Optional[np.ndarray]:
+    """Load rewards_by_step (n_steps, n_agents) for one experiment."""
+    metrics = database.metric.filter_by(exp_id=eid)
+    rewards_metrics = [m for m in metrics if m.metric_name == "rewards"]
+    rewards_metrics = [m for m in rewards_metrics if m.step > 0]
+    if not rewards_metrics:
+        return None
 
-
-def _parse_gamma_sweep(gamma_sweep: str | None) -> list[float]:
-    """Parse comma-separated gamma values into list of floats."""
-    if not gamma_sweep or not gamma_sweep.strip():
-        return []
-    return [float(x.strip()) for x in gamma_sweep.split(",") if x.strip()]
-
-
-# Gamma sweep for full-info efficiency-fairness mechanisms plot (α in user-facing labels)
-_MECHANISMS_GAMMAS = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.98, 1.0]
-
-
-def _gamma_for_full_info(gamma: float) -> float:
-    """Map display gamma to run gamma. FullInfoLearningAgent: γ=1 may not converge, use 0.999."""
-    if gamma >= 1.0:
-        return 0.999
-    return gamma
-
-
-def _run_efficiency_fairness_mechanisms(
-    steps: int,
-    n_runs: int,
-    seed_base: int,
-    save_path: str,
-) -> None:
-    """Run full info (gamma sweep), benevolent dictator, turn-taking, coin toss; plot combined."""
-    data_dir = Path(__file__).resolve().parents[3] / "data" / "scenarios"
-    full_info_scenario = data_dir / "1000x2_full_info_learners.yaml"
-    dictator_scenario = data_dir / "1000x2_benevolent_dictator.yaml"
-    turn_taking_scenario = data_dir / "1000x2_turn_taking_truthful.yaml"
-    coin_toss_scenario = data_dir / "1000x2_coin_toss_silent.yaml"
-
-    for p in (full_info_scenario, dictator_scenario, turn_taking_scenario, coin_toss_scenario):
-        if not p.exists():
-            raise click.ClickException(f"Scenario not found: {p}")
-
-    world_cfg, full_info_pop_cfg, full_info_mech_cfg = _load_scenario_cfgs(str(full_info_scenario))
-    dictator_world, dictator_pop, dictator_mech = _load_scenario_cfgs(str(dictator_scenario))
-    tt_world, tt_pop, tt_mech = _load_scenario_cfgs(str(turn_taking_scenario))
-    ct_world, ct_pop, ct_mech = _load_scenario_cfgs(str(coin_toss_scenario))
-
-    full_info_eff: list[float] = []
-    full_info_fair: list[float] = []
-
-    for gamma_idx, gamma in enumerate(_MECHANISMS_GAMMAS):
-        run_gamma = _gamma_for_full_info(gamma)
-        pop_cfg = copy.deepcopy(full_info_pop_cfg)
-        pop_cfg["parameters"]["agent_type_cfgs"]["full_info"]["agent_model"]["parameters"]["gamma"] = run_gamma
-        log.info("mechanisms_run", variant="full_info", gamma=gamma, n_runs=n_runs, steps=steps)
-        effs, fairs = [], []
-        for r in range(n_runs):
-            seed = seed_base + gamma_idx * 100 + r
-            eff, fair = _run_scenario_and_metrics(
-                world_cfg, pop_cfg, full_info_mech_cfg, steps, seed
-            )
-            effs.append(eff)
-            fairs.append(fair)
-        full_info_eff.append(float(np.mean(effs)))
-        full_info_fair.append(float(np.mean(fairs)))
-
-    log.info("mechanisms_run", variant="Benevolent Dictator", n_runs=n_runs, steps=steps)
-    eff_dict, fair_dict = _mean_efficiency_and_fairness(
-        dictator_world, dictator_pop, dictator_mech, steps, n_runs, 20_000, seed_base
-    )
-
-    log.info("mechanisms_run", variant="Turn-taking", n_runs=n_runs, steps=steps)
-    eff_tt, fair_tt = _mean_efficiency_and_fairness(
-        tt_world, tt_pop, tt_mech, steps, n_runs, 30_000, seed_base
-    )
-
-    log.info("mechanisms_run", variant="Coin toss", n_runs=n_runs, steps=steps)
-    eff_ct, fair_ct = _mean_efficiency_and_fairness(
-        ct_world, ct_pop, ct_mech, steps, n_runs, 40_000, seed_base
-    )
-
-    Path("data/plots").mkdir(parents=True, exist_ok=True)
-    plot_efficiency_fairness_mechanisms(
-        full_info_efficiency=full_info_eff,
-        full_info_fairness=full_info_fair,
-        full_info_gammas=_MECHANISMS_GAMMAS,
-        benevolent_dictator_eff=eff_dict,
-        benevolent_dictator_fair=fair_dict,
-        turn_taking_eff=eff_tt,
-        turn_taking_fair=fair_tt,
-        coin_toss_eff=eff_ct,
-        coin_toss_fair=fair_ct,
-        save_path=save_path,
-    )
-    log.info("plot_saved", path=save_path)
-
-
-def _run_efficiency_fairness_comparison(
-    random_scenario: str,
-    q_learner_scenario: str,
-    optimal_scenario: str,
-    dictator_scenario: str,
-    steps: int,
-    n_runs: int,
-    seed_base: int,
-    save_path: str,
-    gamma_values: list[float] | None = None,
-) -> None:
-    """Run random, optimal, dictator, and Q variants; plot mean efficiency vs fairness."""
-    world_cfg, random_pop_cfg, mechanism_cfg = _load_scenario_cfgs(random_scenario)
-
-    eff_list: list[float] = []
-    fair_list: list[float] = []
-    labels_list: list[str] = []
-
-    log.info("compare_runs", variant="Random", n_runs=n_runs, steps=steps)
-    effs, fairs = [], []
-    for r in range(n_runs):
-        eff, fair = _run_scenario_and_metrics(
-            world_cfg, random_pop_cfg, mechanism_cfg, steps, seed_base + r
-        )
-        effs.append(eff)
-        fairs.append(fair)
-    eff_list.append(float(np.mean(effs)))
-    fair_list.append(float(np.mean(fairs)))
-    labels_list.append("Random")
-
-    optimal_world_cfg, optimal_pop_cfg, optimal_mechanism_cfg = _load_scenario_cfgs(optimal_scenario)
-
-    log.info("compare_runs", variant="Optimal", n_runs=n_runs, steps=steps)
-    effs, fairs = [], []
-    for r in range(n_runs):
-        seed = seed_base + 1_000 + r
-        eff, fair = _run_scenario_and_metrics(
-            optimal_world_cfg, optimal_pop_cfg, optimal_mechanism_cfg, steps, seed
-        )
-        effs.append(eff)
-        fairs.append(fair)
-    eff_list.append(float(np.mean(effs)))
-    fair_list.append(float(np.mean(fairs)))
-    labels_list.append("Optimal")
-
-    dictator_world_cfg, dictator_pop_cfg, dictator_mechanism_cfg = _load_scenario_cfgs(dictator_scenario)
-
-    log.info("compare_runs", variant="Benevolent Dictator", n_runs=n_runs, steps=steps)
-    effs, fairs = [], []
-    for r in range(n_runs):
-        seed = seed_base + 5_000 + r
-        eff, fair = _run_scenario_and_metrics(
-            dictator_world_cfg, dictator_pop_cfg, dictator_mechanism_cfg, steps, seed
-        )
-        effs.append(eff)
-        fairs.append(fair)
-    eff_list.append(float(np.mean(effs)))
-    fair_list.append(float(np.mean(fairs)))
-    labels_list.append("Benevolent Dictator")
-
-    q_world_cfg, q_pop_base, q_mechanism_cfg = _load_scenario_cfgs(q_learner_scenario)
-
-    gammas = gamma_values if gamma_values else _COMPARE_GAMMAS
-    for gamma_idx, gamma in enumerate(gammas):
-        population_cfg = copy.deepcopy(q_pop_base)
+    rows = []
+    agent_ids = None
+    for m in sorted(rewards_metrics, key=lambda x: x.step):
         try:
-            population_cfg["parameters"]["agent_type_cfgs"]["q_learner"]["agent_model"]["parameters"]["gamma"] = gamma
-        except KeyError as e:
-            raise click.ClickException(
-                f"Q-learner population config missing expected key for gamma: {e}. "
-                "Expected agent_type_cfgs.q_learner.agent_model.parameters.gamma"
-            ) from e
-        log.info("compare_runs", variant=f"Q γ={gamma}", n_runs=n_runs, steps=steps)
-        effs, fairs = [], []
-        for r in range(n_runs):
-            seed = seed_base + 10_000 + gamma_idx * 100 + r
-            eff, fair = _run_scenario_and_metrics(
-                q_world_cfg, population_cfg, q_mechanism_cfg, steps, seed
-            )
-            effs.append(eff)
-            fairs.append(fair)
-        eff_list.append(float(np.mean(effs)))
-        fair_list.append(float(np.mean(fairs)))
-        labels_list.append(f"Q γ={gamma:.2f}")
+            rewards = json.loads(m.metric_value)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(rewards, dict) or any(v is None for v in rewards.values()):
+            continue
+        aids = sorted(int(aid) for aid in rewards.keys())
+        if agent_ids is None:
+            agent_ids = aids
+        if aids != agent_ids:
+            continue
+        rows.append([float(rewards.get(str(aid), 0) or 0) for aid in agent_ids])
 
-    plot_efficiency_fairness_comparison(
-        access_fairness=fair_list,
-        efficiency=eff_list,
-        labels=labels_list,
-        save_path=save_path,
-    )
-    log.info("compare_plot_saved", path=save_path)
+    if not rows:
+        return None
+    return np.asarray(rows, dtype=float)
 
 
-@click.command()
-@click.argument(
-    "plot_name",
-    type=click.Choice([
-        "access_fairness_vs_efficiency",
-        "nash_welfare",
-        "reward_over_time",
-        "efficiency_fairness_comparison",
-        "efficiency_fairness_mechanisms",
-        "full_info_policy_distribution",
-        "markov_urgency_metrics",
-        "markov_urgency_violin",
-        "metrics_table",
-    ]),
-)
-@click.option("--scenario", "scenarios", multiple=True, type=click.Path(exists=True))
-@click.option("--label", "labels", multiple=True, type=str)
-@click.option("--steps", type=int, default=1000)
-@click.option("--seed", type=int, default=42)
-@click.option("--window", type=int, default=50, help="Rolling window for reward_over_time smoothing.")
-@click.option(
-    "--n-runs",
-    type=int,
-    default=3,
-    help="For efficiency_fairness_comparison/metrics_table: runs per variant.",
-)
-@click.option(
-    "--seed-base",
-    type=int,
-    default=42,
-    help="For efficiency_fairness_comparison/metrics_table: base seed for runs.",
-)
-@click.option(
-    "--delta-r",
-    type=float,
-    default=1.0,
-    help="For markov_urgency_metrics: reward gain factor Delta r.",
-)
-@click.option(
-    "--lambda-star",
-    type=float,
-    default=None,
-    help="For markov_urgency_metrics/markov_urgency_violin: optional lambda* override.",
-)
-@click.option(
-    "--gamma-sweep",
-    type=str,
-    default=None,
-    help="Comma-separated gamma values for parameter sweep (e.g. '0.1,0.5,0.9,0.99'). "
-    "For access_fairness_vs_efficiency: requires exactly one scenario. "
-    "For efficiency_fairness_comparison: replaces default Q-learner gamma sweep.",
-)
-@click.option(
-    "--agent-type-key",
-    type=str,
-    default=None,
-    help="Agent type key in scenario population (e.g. 'full_info', 'q_learner') when using --gamma-sweep.",
-)
-@click.option(
-    "--out",
-    "out_path",
-    type=click.Path(),
-    default=None,
-    help="Output path for plot (default depends on plot type).",
-)
-@click.option(
-    "--log-level",
-    type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"]),
-    default="INFO",
-)
-def vis(
-    plot_name: str,
-    scenarios: tuple[str, ...],
-    labels: tuple[str, ...],
-    steps: int,
-    seed: int,
-    window: int,
-    n_runs: int,
-    seed_base: int,
-    delta_r: float,
-    lambda_star: float | None,
-    gamma_sweep: str | None,
-    agent_type_key: str | None,
-    out_path: str | None,
+def _common_vis_options(func):
+    """Decorator adding common visualization options."""
+    func = click.option(
+        "--format", "-f",
+        type=click.Choice(["png", "pdf", "svg", "jpg"]),
+        default="png",
+        show_default=True,
+        help="Output image format.",
+    )(func)
+    func = click.option("--dpi", type=int, default=300, show_default=True, help="Image DPI.")(func)
+    func = click.option(
+        "--figsize", nargs=2, type=int, default=[12, 8],
+        show_default=True, help="Figure size (width height).",
+    )(func)
+    func = click.option("--style", type=str, default="whitegrid", show_default=True, help="Seaborn style.")(func)
+    func = click.option("--palette", type=str, default=None, help="Color palette.")(func)
+    func = click.option("--save/--no-save", default=True, show_default=True, help="Save plot to file.")(func)
+    func = click.option(
+        "--log-level", "-l", default="INFO", show_default=True,
+        type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], case_sensitive=False),
+        help="Logging level.",
+    )(func)
+    return func
+
+
+def _save_or_show(save: bool, output_path: Path, dpi: int) -> None:
+    """Save current figure to file and optionally display."""
+    if save:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(output_path, dpi=dpi, bbox_inches="tight")
+        click.echo(f"💾 Plot saved to: {output_path}")
+    click.echo("🖼️  Displaying plot..." if save else "🖼️  Displaying plot (not saving)...")
+    plt.show()
+
+
+# ---------------------------------------------------------------------------
+# CLI group and commands
+# ---------------------------------------------------------------------------
+
+
+@click.group()
+def vis():
+    """Visualization commands for database-backed experiments."""
+    pass
+
+
+@vis.command()
+@click.argument("exp_id", type=int, required=False)
+@click.option("--group-id", "-g", type=int, help="Experiment group ID.")
+@_common_vis_options
+def balances(
+    exp_id: Optional[int],
+    group_id: Optional[int],
+    format: str,
+    dpi: int,
+    figsize: list,
+    style: str,
+    palette: Optional[str],
+    save: bool,
     log_level: str,
-):
-    """Create visualizations from simulation outputs."""
+) -> None:
+    """
+    Visualize agent balance (karma) distributions over time.
+
+    Reads mechanism_state metrics and extracts agent_balances for each experiment.
+    """
+    configure_logging(level=log_level)
+    exp_ids, group, error = _validate_and_resolve_experiments(exp_id, group_id)
+    if error:
+        click.echo(error)
+        return
+
+    try:
+        with Database() as database:
+            for eid in exp_ids or []:
+                if not database.experiment.get(eid):
+                    click.echo(f"❌ Experiment {eid} not found.")
+                    return
+
+            all_rows = _load_balances_for_experiments(database, exp_ids or [])
+            if not all_rows:
+                click.echo("❌ No valid balance data found for any experiment.")
+                return
+
+            df = pd.DataFrame(all_rows)
+            click.echo(
+                f"✅ Loaded {len(df)} balance records across "
+                f"{df['exp_id'].nunique()} experiments, "
+                f"{df['agent_id'].nunique()} agents over {df['step'].nunique()} steps"
+            )
+
+            avg_df = df.groupby(["step", "agent_id"])["balance"].mean().reset_index()
+            avg_df = avg_df.rename(columns={"balance": "avg_balance"})
+
+            sns.set_style(style)
+            if palette:
+                sns.set_palette(palette)
+
+            fig, ax = plt.subplots(1, 1, figsize=tuple(figsize))
+            if group:
+                title = f"Average Agent Balance Distributions - {group.label} ({len(exp_ids or [])} Experiments)"
+            else:
+                title = f"Average Agent Balance Distributions - Experiment {(exp_ids or [0])[0]}"
+            fig.suptitle(title, fontsize=16, fontweight="bold")
+
+            sns.violinplot(data=avg_df, x="step", y="avg_balance", ax=ax)
+            ax.set_title("Average Balance Distribution Over Time")
+            ax.set_xlabel("Step")
+            ax.set_ylabel("Average Balance")
+            steps_sorted = sorted(avg_df["step"].unique())
+            ax.set_xticks(steps_sorted)
+            ax.set_xticklabels(steps_sorted)
+            plt.tight_layout()
+
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            if group:
+                out_dir = Path("data/plots") / f"group_{group.label}"
+            else:
+                out_dir = Path("data/plots") / f"experiment_{(exp_ids or [0])[0]}"
+            output_path = out_dir / f"balances_{timestamp}.{format}"
+
+            _save_or_show(save, output_path, dpi)
+
+            click.echo(f"\n📊 Summary: {df['step'].nunique()} steps, {df['agent_id'].nunique()} agents")
+            init = df[df["step"] == 0]
+            if len(init) > 0:
+                click.echo(f"  Initial Balance Range: {init['balance'].min():.2f} - {init['balance'].max():.2f}")
+
+    except Exception as e:  # pragma: no cover
+        click.echo(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+@vis.command(name="efficiency-fairness")
+@click.argument("exp_ids", type=int, nargs=-1, required=False)
+@click.option("--group-id", "-g", type=int, multiple=True, help="Group ID(s). Single: plot each exp. Multiple: plot avg per group.")
+@click.option(
+    "--labels",
+    type=str,
+    multiple=True,
+    help="Labels for points (e.g. Random, Optimal). Optional; uses exp_id or group label otherwise.",
+)
+@_common_vis_options
+def efficiency_fairness(
+    exp_ids: tuple[int, ...],
+    group_id: tuple[int, ...],
+    labels: tuple[str, ...],
+    format: str,
+    dpi: int,
+    figsize: list,
+    style: str,
+    palette: Optional[str],
+    save: bool,
+    log_level: str,
+) -> None:
+    """
+    Plot (efficiency, access fairness) scatter.
+
+    Single exp_id: plot that experiment. Multiple exp_ids: plot each.
+    Single --group-id: plot each experiment in the group.
+    Multiple --group-id: plot average per group.
+    Use --labels for styled comparison (Random, Optimal, Dictator, Q γ=...).
+    """
+    configure_logging(level=log_level)
+    points_spec, error = _resolve_efficiency_fairness_points(exp_ids, group_id)
+    if error:
+        click.echo(error)
+        return
+
+    try:
+        with Database() as database:
+            eff_list: list[float] = []
+            fair_list: list[float] = []
+            labels_list: list[str] = []
+            for exp_ids_for_point, default_label in points_spec:
+                effs, fairs = [], []
+                for eid in exp_ids_for_point:
+                    rewards_arr, access_arr, weights = _load_rewards_access_for_experiment(database, eid)
+                    if rewards_arr is None or access_arr is None or weights is None:
+                        click.echo(f"⚠️  Could not extract rewards/access for experiment {eid}.")
+                        continue
+                    effs.append(get_efficiency(rewards_arr, weights))
+                    fairs.append(get_access_fairness(access_arr, weights))
+                if not effs or not fairs:
+                    continue
+                eff_list.append(float(np.mean(effs)))
+                fair_list.append(float(np.mean(fairs)))
+                labels_list.append(default_label)
+
+            if not eff_list or not fair_list:
+                click.echo("❌ No efficiency/fairness points could be computed.")
+                return
+
+            if labels and len(labels) == len(eff_list):
+                labels_list = list(labels)
+
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            out_dir = Path("data/plots") / "experiments"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            save_path = str(out_dir / f"efficiency_fairness_{timestamp}.{format}")
+
+            # Decide plotting style:
+            # - If any label looks like a mechanism comparison or encodes a gamma value,
+            #   use the richer comparison plot, which:
+            #     * connects gamma points in order,
+            #     * colors them from blue (low γ) to yellow (high γ),
+            #     * styles known baselines (coin toss, turn-taking, benevolent dictator).
+            # - Otherwise, fall back to a simple scatter.
+            has_mech_or_gamma_labels = False
+            if labels_list:
+                for lb in labels_list:
+                    lower = lb.strip().lower()
+                    if (
+                        "gamma" in lower
+                        or lower.startswith("γ=")
+                        or lower in ("random", "optimal", "benevolent dictator", "coin toss", "turn-taking")
+                        or lower.startswith("q ")
+                    ):
+                        has_mech_or_gamma_labels = True
+                        break
+
+            if has_mech_or_gamma_labels:
+                plot_efficiency_fairness_comparison(
+                    access_fairness=fair_list,
+                    efficiency=eff_list,
+                    labels=labels_list,
+                    save_path=save_path,
+                )
+            else:
+                plot_access_fairness_vs_efficiency(
+                    access_fairness=fair_list,
+                    efficiency=eff_list,
+                    labels=labels_list,
+                    save_path=save_path,
+                )
+            click.echo(f"💾 Plot saved to: {save_path}")
+            if format in ("png", "jpg") and save:
+                try:
+                    img = plt.imread(save_path)
+                    fig, ax = plt.subplots(figsize=tuple(figsize))
+                    ax.imshow(img)
+                    ax.axis("off")
+                    plt.tight_layout()
+                    plt.show()
+                except Exception:
+                    pass
+
+    except Exception as e:  # pragma: no cover
+        click.echo(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+@vis.command(name="reward-over-time")
+@click.argument("exp_id", type=int, required=False)
+@click.option("--group-id", "-g", type=int, help="Experiment group ID.")
+@click.option("--window", type=int, default=50, show_default=True, help="Rolling window for smoothing.")
+@_common_vis_options
+def reward_over_time(
+    exp_id: Optional[int],
+    group_id: Optional[int],
+    window: int,
+    format: str,
+    dpi: int,
+    figsize: list,
+    style: str,
+    palette: Optional[str],
+    save: bool,
+    log_level: str,
+) -> None:
+    """
+    Plot smoothed per-agent reward over time.
+
+    Uses the first experiment in the group (or single experiment).
+    """
+    configure_logging(level=log_level)
+    exp_ids, group, error = _validate_and_resolve_experiments(exp_id, group_id)
+    if error:
+        click.echo(error)
+        return
+
+    try:
+        with Database() as database:
+            eid = (exp_ids or [0])[0]
+            rewards_by_step = _load_rewards_for_experiment(database, eid)
+            if rewards_by_step is None:
+                click.echo(f"❌ No rewards data found for experiment {eid}.")
+                return
+
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            if group:
+                out_dir = Path("data/plots") / f"group_{group.label}"
+            else:
+                out_dir = Path("data/plots") / f"experiment_{eid}"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            save_path = str(out_dir / f"reward_over_time_{timestamp}.{format}")
+
+            plot_smoothed_reward_over_time(
+                rewards_by_step=rewards_by_step,
+                window=window,
+                title="Smoothed reward over time",
+                save_path=save_path,
+            )
+            click.echo(f"💾 Plot saved to: {save_path}")
+            if format in ("png", "jpg") and save:
+                try:
+                    img = plt.imread(save_path)
+                    fig, ax = plt.subplots(figsize=tuple(figsize))
+                    ax.imshow(img)
+                    ax.axis("off")
+                    plt.tight_layout()
+                    plt.show()
+                except Exception:
+                    pass
+
+    except Exception as e:  # pragma: no cover
+        click.echo(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+@vis.command(name="nash-welfare")
+@click.argument("exp_id", type=int, required=False)
+@click.option("--group-id", "-g", type=int, help="Experiment group ID.")
+@_common_vis_options
+def nash_welfare_cmd(
+    exp_id: Optional[int],
+    group_id: Optional[int],
+    format: str,
+    dpi: int,
+    figsize: list,
+    style: str,
+    palette: Optional[str],
+    save: bool,
+    log_level: str,
+) -> None:
+    """
+    Plot Nash welfare bar chart for experiments from the DB.
+
+    Requires population_state metrics (for urgencies) and reports (for allocation).
+    """
+    configure_logging(level=log_level)
+    exp_ids, group, error = _validate_and_resolve_experiments(exp_id, group_id)
+    if error:
+        click.echo(error)
+        return
+
+    try:
+        with Database() as database:
+            nash_values: list[float] = []
+            labels_list: list[str] = []
+            for eid in exp_ids or []:
+                allocation, allocated_urgencies, weights = _load_nash_inputs_for_experiment(database, eid)
+                if allocation is None or allocated_urgencies is None or weights is None:
+                    click.echo(f"⚠️  Could not compute Nash welfare for experiment {eid}.")
+                    continue
+                nash_val, _ = nash_welfare(
+                    allocation=allocation,
+                    urgencies=allocated_urgencies,
+                    social_weights=weights,
+                )
+                nash_values.append(float(nash_val))
+                exp = database.experiment.get(eid)
+                labels_list.append(exp.name if exp else str(eid))
+
+            if not nash_values:
+                click.echo("❌ No Nash welfare values could be computed.")
+                return
+
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            if group:
+                out_dir = Path("data/plots") / f"group_{group.label}"
+            else:
+                out_dir = Path("data/plots") / (
+                    f"experiment_{(exp_ids or [0])[0]}"
+                    if len(exp_ids or []) == 1
+                    else "experiments"
+                )
+            out_dir.mkdir(parents=True, exist_ok=True)
+            save_path = str(out_dir / f"nash_welfare_{timestamp}.{format}")
+
+            plot_nash_welfare(
+                nash_welfare_values=nash_values,
+                labels=labels_list,
+                save_path=save_path,
+            )
+            click.echo(f"💾 Plot saved to: {save_path}")
+            if format in ("png", "jpg") and save:
+                try:
+                    img = plt.imread(save_path)
+                    fig, ax = plt.subplots(figsize=tuple(figsize))
+                    ax.imshow(img)
+                    ax.axis("off")
+                    plt.tight_layout()
+                    plt.show()
+                except Exception:
+                    pass
+
+    except Exception as e:  # pragma: no cover
+        click.echo(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+@vis.command(name="full-info-policy-distribution")
+@click.argument("exp_id", type=int, required=True)
+@click.option("--step", type=int, default=None, help="Step to use (default: last).")
+@_common_vis_options
+def full_info_policy_distribution(
+    exp_id: int,
+    step: Optional[int],
+    format: str,
+    dpi: int,
+    figsize: list,
+    style: str,
+    palette: Optional[str],
+    save: bool,
+    log_level: str,
+) -> None:
+    """
+    Plot learned policy (Bid vs Karma) and karma distribution from FullInfoLearningAgent.
+
+    Requires experiment with FullInfoLearningAgent; policy is read from population_state.
+    """
     configure_logging(level=log_level)
 
-    if plot_name == "efficiency_fairness_mechanisms":
-        _run_efficiency_fairness_mechanisms(
-            steps=steps,
-            n_runs=n_runs,
-            seed_base=seed_base,
-            save_path=out_path or "data/plots/efficiency_fairness_mechanisms.png",
-        )
-        return
+    try:
+        with Database() as database:
+            if not database.experiment.get(exp_id):
+                click.echo(f"❌ Experiment {exp_id} not found.")
+                return
 
-    if plot_name == "efficiency_fairness_comparison":
-        if len(scenarios) < 4:
-            raise click.ClickException(
-                f"{plot_name} requires 4 --scenario values (random, optimal, dictator, q-learner in that order)"
-            )
-        random_scenario, optimal_scenario, dictator_scenario, q_learner_scenario = scenarios[0], scenarios[1], scenarios[2], scenarios[3]
-        save_path = out_path or "data/plots/efficiency_fairness_comparison.png"
-        gamma_vals = _parse_gamma_sweep(gamma_sweep) if gamma_sweep else None
-        _run_efficiency_fairness_comparison(
-            random_scenario=random_scenario,
-            q_learner_scenario=q_learner_scenario,
-            optimal_scenario=optimal_scenario,
-            dictator_scenario=dictator_scenario,
-            steps=steps,
-            n_runs=n_runs,
-            seed_base=seed_base,
-            save_path=save_path,
-            gamma_values=gamma_vals,
-        )
-        return
+            metrics = database.metric.filter_by(exp_id=exp_id)
+            pop_metrics = [m for m in metrics if m.metric_name == "population_state"]
+            if not pop_metrics:
+                click.echo("❌ No population_state metrics found.")
+                return
 
-    if plot_name == "access_fairness_vs_efficiency" and gamma_sweep and agent_type_key:
-        gamma_vals = _parse_gamma_sweep(gamma_sweep)
-        if not gamma_vals:
-            raise click.ClickException("--gamma-sweep must contain at least one value.")
-        if len(scenarios) != 1:
-            raise click.ClickException(
-                "access_fairness_vs_efficiency with --gamma-sweep requires exactly one --scenario."
-            )
-        scenario = scenarios[0]
-        world_cfg, population_cfg, mechanism_cfg = _load_scenario_cfgs(scenario)
-        agent_type_cfgs = population_cfg["parameters"]["agent_type_cfgs"]
-        if agent_type_key not in agent_type_cfgs:
-            raise click.ClickException(
-                f"Agent type {agent_type_key!r} not found in scenario. "
-                f"Available keys: {list(agent_type_cfgs.keys())}."
-            )
-        try:
-            _ = agent_type_cfgs[agent_type_key]["agent_model"]["parameters"]["gamma"]
-        except KeyError as e:
-            raise click.ClickException(
-                f"Agent type {agent_type_key!r} has no gamma parameter: {e}."
-            ) from e
+            if step is not None:
+                pop_by_step = {m.step: m for m in pop_metrics}
+                if step not in pop_by_step:
+                    click.echo(f"❌ Step {step} not found.")
+                    return
+                target_metric = pop_by_step[step]
+            else:
+                target_metric = max(pop_metrics, key=lambda m: m.step)
 
-        eff_list: list[float] = []
-        fair_list: list[float] = []
-        labels_list: list[str] = []
-        for gamma_idx, gamma in enumerate(gamma_vals):
-            pop_cfg = copy.deepcopy(population_cfg)
-            pop_cfg["parameters"]["agent_type_cfgs"][agent_type_key]["agent_model"]["parameters"]["gamma"] = gamma
-            log.info("gamma_sweep_run", gamma=gamma, agent_type=agent_type_key, n_runs=n_runs, steps=steps)
-            effs, fairs = [], []
-            for r in range(n_runs):
-                eff, fair = _run_scenario_and_metrics(
-                    world_cfg, pop_cfg, mechanism_cfg, steps, seed_base + gamma_idx * 100 + r
+            pop_state = json.loads(target_metric.metric_value)
+            agent_states = pop_state.get("agent_states")
+            if not isinstance(agent_states, dict):
+                click.echo("❌ Could not parse population_state.")
+                return
+
+            pi_arr = None
+            d_arr = None
+            urgency_levels: list[int] = []
+            for _aid, state in agent_states.items():
+                if not isinstance(state, dict):
+                    continue
+                policy = state.get("policy")
+                if not isinstance(policy, dict):
+                    continue
+                pi_raw = policy.get("pi")
+                d_raw = policy.get("d")
+                if pi_raw is not None and d_raw is not None:
+                    pi_arr = np.asarray(pi_raw, dtype=float)
+                    d_arr = np.asarray(d_raw, dtype=float)
+                    break
+
+            if pi_arr is None or d_arr is None:
+                click.echo(
+                    "❌ No FullInfoLearningAgent policy (pi, d) found in population_state. "
+                    "Run an experiment with FullInfoLearningAgent first."
                 )
-                effs.append(eff)
-                fairs.append(fair)
-            eff_list.append(float(np.mean(effs)))
-            fair_list.append(float(np.mean(fairs)))
-            labels_list.append(f"γ={gamma:.2f}")
+                return
 
-        Path("data/plots").mkdir(parents=True, exist_ok=True)
-        save_path = out_path or "data/plots/access_fairness_vs_efficiency.png"
-        plot_access_fairness_vs_efficiency(
-            access_fairness=fair_list,
-            efficiency=eff_list,
-            labels=labels_list,
-            save_path=save_path,
-            sweep_values=gamma_vals,
-        )
-        log.info("plot_saved", path=save_path)
+            nu, nk, _ = pi_arr.shape
+            urgency_levels = list(range(nu))
+            try:
+                pop_cfg = database.population.to_scenario_population(
+                    database.experiment.get(exp_id).population_hash
+                )
+                for _mid, acfg in pop_cfg.items():
+                    ul = acfg.get("agent_model", {}).get("parameters", {}).get("urgency_levels")
+                    if ul is not None:
+                        urgency_levels = [int(u) for u in ul]
+                        break
+            except Exception:
+                pass
+
+            if len(urgency_levels) == 3 and urgency_levels[0] == urgency_levels[1] < urgency_levels[2]:
+                urgency_labels = [
+                    f"u = {urgency_levels[0]} default",
+                    f"u = {urgency_levels[1]} intermediate",
+                    f"u = {urgency_levels[2]} urgent",
+                ]
+            else:
+                urgency_labels = [f"u = {u}" for u in urgency_levels]
+
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            out_dir = Path("data/plots") / f"experiment_{exp_id}"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            save_path = str(out_dir / f"full_info_policy_distribution_{timestamp}.{format}")
+
+            plot_full_info_policy_and_distribution(
+                pi=pi_arr,
+                d=d_arr,
+                urgency_levels=urgency_levels,
+                urgency_labels=urgency_labels,
+                save_path=save_path,
+            )
+            click.echo(f"💾 Plot saved to: {save_path}")
+            if format in ("png", "jpg") and save:
+                try:
+                    img = plt.imread(save_path)
+                    fig, ax = plt.subplots(figsize=tuple(figsize))
+                    ax.imshow(img)
+                    ax.axis("off")
+                    plt.tight_layout()
+                    plt.show()
+                except Exception:
+                    pass
+
+    except Exception as e:  # pragma: no cover
+        click.echo(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+@vis.command(name="markov-urgency-violin")
+@click.argument("exp_id", type=int, required=True)
+@click.option("--delta-r", type=float, default=1.0, help="Reward gain factor Delta r.")
+@click.option("--lambda-star", type=float, default=None, help="Optional lambda* override.")
+@_common_vis_options
+def markov_urgency_violin(
+    exp_id: int,
+    delta_r: float,
+    lambda_star: Optional[float],
+    format: str,
+    dpi: int,
+    figsize: list,
+    style: str,
+    palette: Optional[str],
+    save: bool,
+    log_level: str,
+) -> None:
+    """
+    Plot Markov stationary urgency distribution violin from experiment config.
+
+    Uses world and population config stored with the experiment.
+    """
+    configure_logging(level=log_level)
+
+    try:
+        with Database() as database:
+            world_cfg, population_cfg = _load_experiment_configs(database, exp_id)
+            (
+                stationary,
+                urgency_levels,
+                thresholds,
+                spike_indices,
+                surplus_efficiency,
+                _lambda_used,
+            ) = _compute_markov_metrics(world_cfg, population_cfg, lambda_star, delta_r)
+
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            out_dir = Path("data/plots") / f"experiment_{exp_id}"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            save_path = str(out_dir / f"markov_urgency_violin_{timestamp}.{format}")
+
+            plot_markov_stationary_violin(
+                urgency_levels=urgency_levels,
+                stationary_distributions=stationary,
+                spike_indices=spike_indices,
+                surplus_efficiency=surplus_efficiency,
+                thresholds=thresholds,
+                save_path=save_path,
+            )
+            click.echo(f"💾 Plot saved to: {save_path}")
+            if format in ("png", "jpg") and save:
+                try:
+                    img = plt.imread(save_path)
+                    fig, ax = plt.subplots(figsize=tuple(figsize))
+                    ax.imshow(img)
+                    ax.axis("off")
+                    plt.tight_layout()
+                    plt.show()
+                except Exception:
+                    pass
+
+    except Exception as e:  # pragma: no cover
+        click.echo(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+@vis.command(name="metrics-table")
+@click.argument("exp_ids", type=int, nargs=-1, required=True)
+@click.option(
+    "--labels",
+    type=str,
+    multiple=True,
+    required=True,
+    help="Column labels (one per experiment, e.g. Random, Q-learning, Optimal).",
+)
+@click.option("--title", type=str, default="Mechanism Metrics Summary", help="Table title.")
+@_common_vis_options
+def metrics_table(
+    exp_ids: tuple[int, ...],
+    labels: tuple[str, ...],
+    title: str,
+    format: str,
+    dpi: int,
+    figsize: list,
+    style: str,
+    palette: Optional[str],
+    save: bool,
+    log_level: str,
+) -> None:
+    """
+    Render a metrics table (Efficiency, Fairness) from DB experiments.
+
+    Example: kpp vis metrics-table 1 2 3 --labels Random --labels "Q-learning" --labels Optimal
+    """
+    configure_logging(level=log_level)
+    if len(labels) != len(exp_ids):
+        click.echo("❌ --labels count must match number of experiments.")
         return
 
-    if plot_name == "metrics_table":
-        if len(scenarios) < 3:
-            raise click.ClickException(
-                f"{plot_name} requires 3 --scenario values (random, q-learner, optimal in that order)"
-            )
-        random_scenario, q_learner_scenario, optimal_scenario = scenarios[0], scenarios[1], scenarios[2]
-        random_world_cfg, random_pop_cfg, random_mech_cfg = _load_scenario_cfgs(random_scenario)
-        q_world_cfg, q_pop_cfg, q_mech_cfg = _load_scenario_cfgs(q_learner_scenario)
-        optimal_world_cfg, optimal_pop_cfg, optimal_mech_cfg = _load_scenario_cfgs(optimal_scenario)
+    try:
+        with Database() as database:
+            eff_list: list[float] = []
+            fair_list: list[float] = []
+            for eid in exp_ids:
+                rewards_arr, access_arr, weights = _load_rewards_access_for_experiment(database, eid)
+                if rewards_arr is None or access_arr is None or weights is None:
+                    click.echo(f"⚠️  Could not extract data for experiment {eid}.")
+                    continue
+                eff_list.append(get_efficiency(rewards_arr, weights))
+                fair_list.append(get_access_fairness(access_arr, weights))
 
-        eff_random, fair_random = _mean_efficiency_and_fairness(
-            random_world_cfg,
-            random_pop_cfg,
-            random_mech_cfg,
-            steps,
-            n_runs,
-            0,
-            seed_base,
-        )
-        eff_q, fair_q = _mean_efficiency_and_fairness(
-            q_world_cfg,
-            q_pop_cfg,
-            q_mech_cfg,
-            steps,
-            n_runs,
-            1_000,
-            seed_base,
-        )
-        eff_opt, fair_opt = _mean_efficiency_and_fairness(
-            optimal_world_cfg,
-            optimal_pop_cfg,
-            optimal_mech_cfg,
-            steps,
-            n_runs,
-            2_000,
-            seed_base,
-        )
+            if len(eff_list) != len(exp_ids) or len(fair_list) != len(exp_ids):
+                click.echo("❌ Could not load data for all experiments.")
+                return
 
-        def _markov_means(world_cfg: dict, population_cfg: dict) -> tuple[float, float, float]:
-            _, _, _, spike, surplus, lambda_used = _compute_markov_metrics(
-                world_cfg, population_cfg, lambda_star, delta_r
-            )
-            return float(np.mean(spike)), float(np.mean(surplus)), float(lambda_used)
-
-        spike_random, surplus_random, lambda_random = _markov_means(random_world_cfg, random_pop_cfg)
-        spike_q, surplus_q, lambda_q = _markov_means(q_world_cfg, q_pop_cfg)
-        spike_opt, surplus_opt, lambda_opt = _markov_means(optimal_world_cfg, optimal_pop_cfg)
-
-        row_labels = [
-            "Efficiency",
-            "Fairness",
-            "Spike index",
-            "Surplus efficiency",
-            "Lambda*",
-        ]
-        column_labels = ["Random", "Q-learning", "Optimal"]
-        cell_text = [
-            [f"{eff_random:.4f}", f"{eff_q:.4f}", f"{eff_opt:.4f}"],
-            [f"{fair_random:.4f}", f"{fair_q:.4f}", f"{fair_opt:.4f}"],
-            [f"{spike_random:.4f}", f"{spike_q:.4f}", f"{spike_opt:.4f}"],
-            [f"{surplus_random:.4f}", f"{surplus_q:.4f}", f"{surplus_opt:.4f}"],
-            [f"{lambda_random:.4f}", f"{lambda_q:.4f}", f"{lambda_opt:.4f}"],
-        ]
-        save_path = out_path or "data/plots/metrics_table.png"
-        plot_metrics_table(
-            row_labels=row_labels,
-            column_labels=column_labels,
-            cell_text=cell_text,
-            title="Random vs Q-learning vs Optimal",
-            save_path=save_path,
-        )
-        log.info("metrics_table_saved", path=save_path)
-        return
-
-    if plot_name == "full_info_policy_distribution":
-        if not scenarios:
-            raise click.ClickException(
-                "full_info_policy_distribution requires one --scenario with a FullInfoLearningAgent."
-            )
-        agent_type_key = agent_type_key or "full_info"
-        scenario = scenarios[0]
-        log.info("full_info_plot_start", scenario=scenario, steps=steps, seed=seed)
-        world_cfg, population_cfg, mechanism_cfg = _load_scenario_cfgs(scenario)
-        agent_type_cfgs = population_cfg["parameters"]["agent_type_cfgs"]
-        if agent_type_key not in agent_type_cfgs:
-            raise click.ClickException(
-                f"Agent type {agent_type_key!r} not found in scenario. "
-                f"Available keys: {list(agent_type_cfgs.keys())}."
-            )
-        population_params = population_cfg["parameters"]["agent_type_cfgs"]
-        world, mechanism, population = create_components(world_cfg, mechanism_cfg, population_params)
-        results = run_simulation(world, population, mechanism, steps, seed)
-        model = population.model_registry[agent_type_key]
-        if not isinstance(model, FullInfoLearningAgent):
-            raise click.ClickException(
-                f"Agent type {agent_type_key!r} is not a FullInfoLearningAgent. "
-                "Use --agent-type-key to specify the full_info agent type."
-            )
-        if model.pi is None or model.d is None:
-            raise click.ClickException(
-                "FullInfoLearningAgent has no learned policy (pi/d). "
-                "Ensure the simulation ran for at least one step."
-            )
-        urgency_levels = list(model.urgency_levels)
-        # Default labels: "u = 1 default", "u = 1 intermediate", "u = 10 urgent" when [1,1,10]
-        if len(urgency_levels) == 3 and urgency_levels[0] == urgency_levels[1] < urgency_levels[2]:
-            urgency_labels = [
-                f"u = {urgency_levels[0]} default",
-                f"u = {urgency_levels[1]} intermediate",
-                f"u = {urgency_levels[2]} urgent",
+            row_labels = ["Efficiency", "Fairness"]
+            column_labels = list(labels)
+            cell_text = [
+                [f"{e:.4f}" for e in eff_list],
+                [f"{f:.4f}" for f in fair_list],
             ]
-        else:
-            urgency_labels = [f"u = {u}" for u in urgency_levels]
-        Path("data/plots").mkdir(parents=True, exist_ok=True)
-        save_path = out_path or "data/plots/full_info_policy_distribution.png"
-        plot_full_info_policy_and_distribution(
-            pi=model.pi,
-            d=model.d,
-            urgency_levels=urgency_levels,
-            urgency_labels=urgency_labels,
-            save_path=save_path,
-        )
-        log.info("full_info_plot_saved", path=save_path)
-        return
 
-    if plot_name in ("access_fairness_vs_efficiency", "nash_welfare", "reward_over_time", "markov_urgency_metrics", "markov_urgency_violin"):
-        if not scenarios:
-            raise click.ClickException(
-                f"{plot_name} requires at least one --scenario"
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            out_dir = Path("data/plots")
+            out_dir.mkdir(parents=True, exist_ok=True)
+            save_path = str(out_dir / f"metrics_table_{timestamp}.{format}")
+
+            plot_metrics_table(
+                row_labels=row_labels,
+                column_labels=column_labels,
+                cell_text=cell_text,
+                title=title,
+                save_path=save_path,
             )
+            click.echo(f"💾 Plot saved to: {save_path}")
+            if format in ("png", "jpg") and save:
+                try:
+                    img = plt.imread(save_path)
+                    fig, ax = plt.subplots(figsize=tuple(figsize))
+                    ax.imshow(img)
+                    ax.axis("off")
+                    plt.tight_layout()
+                    plt.show()
+                except Exception:
+                    pass
 
-    if labels and len(labels) != len(scenarios):
-        raise click.ClickException("--label must be provided once per --scenario.")
-    scenario_labels = list(labels) if labels else _default_labels(scenarios)
-
-    Path("data/plots").mkdir(parents=True, exist_ok=True)
-
-    if plot_name == "markov_urgency_metrics":
-        scenario_outputs: dict[str, dict] = {}
-        for scenario in scenarios:
-            world_cfg, population_cfg, _ = _load_scenario_cfgs(scenario)
-            stationary, urgency_levels, thresholds, spike_indices, surplus_efficiency, lambda_star_used = (
-                _compute_markov_metrics(world_cfg, population_cfg, lambda_star, delta_r)
-            )
-            resource_count = float(len(world_cfg["parameters"]["resource_capacities"]))
-            n_agents = len(stationary)
-            metrics = {
-                "lambda_star": float(lambda_star_used),
-                "lambda_source": "user" if lambda_star is not None else "computed",
-                "effective_capacity": float(min(resource_count, n_agents)),
-                "thresholds": [float(x) for x in thresholds],
-                "spike_indices": [float(x) for x in spike_indices],
-                "surplus_efficiency": [float(x) for x in surplus_efficiency],
-                "stationary_distributions": [pi.tolist() for pi in stationary],
-            }
-            scenario_outputs[Path(scenario).stem] = metrics
-
-        yaml_output = yaml.safe_dump(scenario_outputs, sort_keys=False)
-        if out_path is not None:
-            with open(out_path, "w") as f:
-                f.write(yaml_output)
-            log.info("markov_metrics_saved", path=out_path)
-        click.echo(yaml_output)
-        return
-
-    if plot_name == "markov_urgency_violin":
-        scenario = scenarios[0]
-        world_cfg, population_cfg, _ = _load_scenario_cfgs(scenario)
-        stationary, urgency_levels, thresholds, spike_indices, surplus_efficiency, lambda_star_used = (
-            _compute_markov_metrics(world_cfg, population_cfg, lambda_star, delta_r)
-        )
-        save_path = out_path or "data/plots/markov_urgency_violin.png"
-        plot_markov_stationary_violin(
-            urgency_levels=urgency_levels,
-            stationary_distributions=stationary,
-            spike_indices=spike_indices,
-            surplus_efficiency=surplus_efficiency,
-            thresholds=thresholds,
-            save_path=save_path,
-        )
-        log.info("markov_violin_saved", path=save_path, lambda_star=lambda_star_used)
-        return
-
-    if plot_name == "reward_over_time":
-        scenario = scenarios[0]
-        log.info("visualization_scenario_start", scenario=scenario, steps=steps, seed=seed)
-        world_cfg, population_cfg, mechanism_cfg = _load_scenario_cfgs(scenario)
-        population_params = population_cfg["parameters"]["agent_type_cfgs"]
-        world, mechanism, population = create_components(world_cfg, mechanism_cfg, population_params)
-        results = run_simulation(world, population, mechanism, steps, seed)
-        rewards_by_step = _extract_rewards_from_results(results)
-        plot_smoothed_reward_over_time(
-            rewards_by_step=rewards_by_step,
-            window=window,
-            save_path=out_path or "data/plots/reward_over_time.png",
-        )
-        log.info("visualization_scenario_complete", scenario=scenario)
-        return
-
-    access_fairness_values: list[float] = []
-    efficiency_values: list[float] = []
-    nash_welfare_values: list[float] = []
-
-    for scenario in scenarios:
-        log.info("visualization_scenario_start", scenario=scenario, steps=steps, seed=seed)
-        world_cfg, population_cfg, mechanism_cfg = _load_scenario_cfgs(scenario)
-        population_params = population_cfg["parameters"]["agent_type_cfgs"]
-        world, mechanism, population = create_components(world_cfg, mechanism_cfg, population_params)
-        results = run_simulation(world, population, mechanism, steps, seed)
-
-        access_by_step, rewards_by_step, _, allocation, allocated_urgencies = _extract_step_arrays(results)
-        agent_ids = sorted(results[0].population_state.agent_states.keys())
-        weights = np.asarray([population.agent_weights[aid] for aid in agent_ids])
-        access_fairness_values.append(get_access_fairness(access_by_step, weights))
-        efficiency_values.append(get_efficiency(rewards_by_step, weights))
-
-        if allocation.size == 0:
-            raise click.ClickException(
-                f"No allocated outcomes found for scenario {scenario!r}; cannot compute nash_welfare."
-            )
-
-        agent_ids = sorted(results[0].population_state.agent_states.keys())
-        weights = np.asarray([population.agent_weights[aid] for aid in agent_ids])
-        nash_value, _ = nash_welfare(
-            allocation=allocation,
-            urgencies=allocated_urgencies,
-            social_weights=weights,
-        )
-        nash_welfare_values.append(float(nash_value))
-        log.info("visualization_scenario_complete", scenario=scenario)
-
-    if plot_name == "access_fairness_vs_efficiency":
-        save_path = out_path or "data/plots/access_fairness_vs_efficiency.png"
-        plot_access_fairness_vs_efficiency(
-            access_fairness=access_fairness_values,
-            efficiency=efficiency_values,
-            labels=scenario_labels,
-            save_path=save_path,
-        )
-        log.info("plot_saved", path=save_path)
-    elif plot_name == "nash_welfare":
-        save_path = out_path or "data/plots/nash_welfare.png"
-        plot_nash_welfare(
-            nash_welfare_values=nash_welfare_values,
-            labels=scenario_labels,
-            save_path=save_path,
-        )
-        log.info("plot_saved", path=save_path)
-    else:
-        raise click.ClickException(f"Unsupported plot_name {plot_name!r}.")
-
-
-def _run_scenario_and_metrics(
-    world_cfg: dict,
-    population_cfg: dict,
-    mechanism_cfg: dict,
-    steps: int,
-    seed: int,
-) -> tuple[float, float]:
-    """Run one simulation and return (efficiency, access_fairness)."""
-    population_params = population_cfg["parameters"]["agent_type_cfgs"]
-    world, mechanism, population = create_components(world_cfg, mechanism_cfg, population_params)
-    results = run_simulation(world, population, mechanism, steps, seed)
-    access_by_step, rewards_by_step, _, _, _ = _extract_step_arrays(results)
-    agent_ids = sorted(results[0].population_state.agent_states.keys())
-    weights = np.asarray([population.agent_weights[aid] for aid in agent_ids])
-    return get_efficiency(rewards_by_step, weights), get_access_fairness(access_by_step, weights)
-
-
-# Discount factors (gamma) for Q-learner comparison
-_COMPARE_GAMMAS = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.98, 1.0]
+    except Exception as e:  # pragma: no cover
+        click.echo(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ class AgentModel[
     @abstractmethod
     def initialize(
         self,
+        agent_id: int,
         world_dynamics: object,
         mechanism_dynamics: object,
         rng: np.random.Generator,
@@ -75,12 +76,13 @@ class AgentModel[
     @abstractmethod
     def adapt(
         self,
+        agent_id: int,
         previous: AgentState[PRIVATE_STATE, POLICY_STATE],
         observation: OBSERVATION,
         resolution: RESOLUTION,
         reward: float,
         timestep: int,
         rng: np.random.Generator,
-    ) -> AgentState[PRIVATE_STATE, POLICY_STATE]:
+    ) -> tuple[AgentState[PRIVATE_STATE, POLICY_STATE], bool]:
         """Update learning/adaptation state."""
         ...

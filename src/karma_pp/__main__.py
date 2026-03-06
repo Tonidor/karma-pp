@@ -4,6 +4,7 @@ import click
 
 from .cli.run_commands import run
 from .cli.vis_commands import vis
+from .cli.db_commands import db
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent  # ./
 
@@ -14,9 +15,9 @@ def cli():
     pass
 
 
-# Add the run commands
 cli.add_command(run)
 cli.add_command(vis)
+cli.add_command(db)
 
 
 if __name__ == "__main__":

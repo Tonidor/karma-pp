@@ -107,38 +107,38 @@ kpp vis <PLOT_NAME> [OPTIONS]
 
 ```bash
 # Run a short simulation
-kpp run --scenario data/scenarios/2x2_benevolent_dictator.yaml --steps 100
+kpp run --scenario data/scenarios/200x2_benevolent_dictator.yaml --steps 100
 
 # Run with debug logging and a different seed
-kpp run --scenario data/scenarios/2x2_q_learners.yaml --steps 500 --seed 7 --log-level DEBUG
+kpp run --scenario data/scenarios/200x2_coin_toss.yaml --steps 500 --seed 7 --log-level DEBUG
 
 # Plot efficiency vs fairness for one scenario
-kpp vis access_fairness_vs_efficiency --scenario data/scenarios/2x2_benevolent_dictator.yaml --steps 500
+kpp vis access_fairness_vs_efficiency --scenario data/scenarios/200x2_benevolent_dictator.yaml --steps 500
 
 # Compare multiple scenarios with custom labels
 kpp vis nash_welfare \
-  --scenario data/scenarios/2x2_randoms.yaml \
-  --scenario data/scenarios/2x2_benevolent_dictator.yaml \
-  --label "Random" --label "Dictator"
+  --scenario data/scenarios/200x2_benevolent_dictator.yaml \
+  --scenario data/scenarios/200x2_turn_taking.yaml \
+  --label "Dictator" --label "Turn-taking"
 
 # Export Markov metrics to YAML
-kpp vis markov_urgency_metrics --scenario data/scenarios/2x2_benevolent_dictator.yaml --out data/plots/metrics.yaml
+kpp vis markov_urgency_metrics --scenario data/scenarios/200x2_full_info_gamma_0.50.yaml --out data/plots/metrics.yaml
 
-# Generate comparison plot (Random vs Optimal vs Dictator vs Q-learners)
-# Scenarios must be passed in order: random, optimal, dictator, q-learner
+# Generate comparison plot across scenario variants
+# Scenarios must be passed in a consistent order
 kpp vis efficiency_fairness_comparison \
-  --scenario data/scenarios/2x2_randoms.yaml \
-  --scenario data/scenarios/2x2_optimal_bidders.yaml \
-  --scenario data/scenarios/2x2_benevolent_dictator.yaml \
-  --scenario data/scenarios/2x2_q_learners.yaml \
+  --scenario data/scenarios/200x2_full_info_gamma_0.00.yaml \
+  --scenario data/scenarios/200x2_full_info_gamma_0.30.yaml \
+  --scenario data/scenarios/200x2_full_info_gamma_0.60.yaml \
+  --scenario data/scenarios/200x2_full_info_gamma_0.90.yaml \
   --steps 200 --n-runs 2
 
-# Generate metrics table (Random vs Q-learning vs Optimal)
-# Scenarios must be passed in order: random, q-learner, optimal
+# Generate metrics table across scenario variants
+# Scenarios must be passed in a consistent order
 kpp vis metrics_table \
-  --scenario data/scenarios/2x2_randoms.yaml \
-  --scenario data/scenarios/2x2_q_learners.yaml \
-  --scenario data/scenarios/2x2_optimal_bidders.yaml \
+  --scenario data/scenarios/200x2_full_info_gamma_0.10.yaml \
+  --scenario data/scenarios/200x2_full_info_gamma_0.50.yaml \
+  --scenario data/scenarios/200x2_full_info_gamma_0.90.yaml \
   --steps 200 --n-runs 2
 ```
 
@@ -146,9 +146,7 @@ kpp vis metrics_table \
 
 ```
 data/
-  scenarios/    # Experiment entry points (YAML)
-  worlds/       # World configuration (YAML)
-  mechanisms/   # Mechanism configuration (YAML)
+  scenarios/    # Unified experiment entry points (YAML with world, mechanism, population)
 src/karma_pp/
   core/         # Abstract interfaces (Agent, Mechanism, World, Population, Simulation)
   impl/
@@ -162,6 +160,5 @@ tests/          # pytest test suite
 
 ## Adding a new scenario
 
-1. Create a scenario YAML in `data/scenarios/`. Reference world and mechanism files using paths **relative to the scenario file** (e.g. `../worlds/my_world.yaml`).
-2. Create or reuse world/mechanism YAMLs in `data/worlds/` and `data/mechanisms/`.
-3. Run with `kpp run --scenario data/scenarios/my_scenario.yaml`.
+1. Create a unified scenario YAML in `data/scenarios/` with top-level `world`, `mechanism`, and `population` keys.
+2. Run with `kpp run --scenario data/scenarios/my_scenario.yaml`.

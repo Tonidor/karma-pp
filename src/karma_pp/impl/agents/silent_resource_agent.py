@@ -23,6 +23,7 @@ class SilentResourceAgent[MECHANISM_STATE](
 
     def _initialize_policy(
         self,
+        agent_id: int,
         world_dynamics: ResourceWorldDynamics,
         mechanism_dynamics: object,
         rng: np.random.Generator,
@@ -54,11 +55,12 @@ class SilentResourceAgent[MECHANISM_STATE](
 
     def adapt(
         self,
+        agent_id: int,
         previous: AgentState[int, PolicyState],
         observation: ResourceAgentObservation,
         resolution: Resolution[Outcome],
         reward: float,
         timestep: int,
         rng: np.random.Generator,
-    ) -> AgentState[int, PolicyState]:
-        return previous
+    ) -> tuple[AgentState[int, PolicyState], bool]:
+        return previous, False

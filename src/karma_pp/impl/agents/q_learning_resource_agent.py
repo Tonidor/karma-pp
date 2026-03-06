@@ -79,6 +79,7 @@ class QLearningResourceAgent(
 
     def _initialize_policy(
         self,
+        agent_id: int,
         world_dynamics: ResourceWorldDynamics,
         mechanism_dynamics: KarmaDynamics,
         rng: np.random.Generator,
@@ -136,13 +137,14 @@ class QLearningResourceAgent(
 
     def adapt(
         self,
+        agent_id: int,
         previous: AgentState[int, QLearningPolicyState],
         observation: QLearningObservation,
         resolution: KarmaResolution,
         reward: float,
         timestep: int,
         rng: np.random.Generator,
-    ) -> AgentState[int, QLearningPolicyState]:
+    ) -> tuple[AgentState[int, QLearningPolicyState], bool]:
         del resolution, rng
         if timestep == -1:
             return AgentState(private=previous.private, policy=previous.policy)
@@ -169,4 +171,8 @@ class QLearningResourceAgent(
 
         # Decay exploration rate per agent, clipping at epsilon_min.
         new_policy.epsilon = max(self.epsilon_min, policy.epsilon * self.epsilon_decay)
-        return AgentState(private=previous.private, policy=new_policy)
+
+        # TODO: Check if the policy has converged
+        has_converged = False
+        new_agent_state = AgentState(private=previous.private, policy=new_policy)
+        return new_agent_state, has_converged

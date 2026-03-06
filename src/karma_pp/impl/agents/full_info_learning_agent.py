@@ -31,7 +31,7 @@ from typing import cast
 import numpy as np
 import structlog
 
-from karma_pp.core.types import AgentState, PopulationState
+from karma_pp.core.types import AgentState, PopulationState, ClonePolicyState
 from karma_pp.impl.agents.resource_agent import ResourceAgent, ResourceAgentObservation
 from karma_pp.impl.mechanisms.karma.karma_mechanism import (
     KarmaDynamics,
@@ -62,9 +62,13 @@ class FullInfoPolicyState:
     """Per-agent policy state.
 
     The learning state (π, d, V) lives on the shared model instance.
-    This dataclass is intentionally empty; it acts as a typed marker so the
-    framework's generic machinery works correctly.
+    The agent that performs the adapt update stores pi and d here so they
+    can be persisted (e.g. in population_state) and plotted from the DB.
     """
+
+    pi: np.ndarray | None = None  # (nu, nk, nk): π[u, k, b]
+    d: np.ndarray | None = None   # (nu, nk): d[u, k]
+
 
 
 class FullInfoLearningAgent(
@@ -100,6 +104,7 @@ class FullInfoLearningAgent(
         dt: float = 0.1,
         vi_tol: float = 1e-6,
         vi_max_iter: int = 1000,
+        cov_tol: float = 1e-6,
     ) -> None:
         super().__init__(
             transition_matrix=transition_matrix,
@@ -116,6 +121,7 @@ class FullInfoLearningAgent(
         self.dt = float(dt)
         self.vi_tol = float(vi_tol)
         self.vi_max_iter = int(vi_max_iter)
+        self.cov_tol = float(cov_tol)
 
         # Shared learning state
         self.pi: np.ndarray | None = None          # (nu, nk, nk): π[u, k, b]
@@ -124,12 +130,25 @@ class FullInfoLearningAgent(
         self._mechanism_dynamics: KarmaDynamics | None = None
         self._last_update_step: int = -1           # timestep of last adapt run
 
+        # Id of the reference agent whose policy state is persisted to the
+        # population_state. All other agents sharing this model instance store
+        # a lightweight ClonePolicyState that points to this reference agent.
+        self.reference_agent_id: int | None = None
+        self._has_converged: bool = False
+
     def _initialize_policy(
         self,
+        agent_id: int,
         world_dynamics: ResourceWorldDynamics,
         mechanism_dynamics: KarmaDynamics,
         rng: np.random.Generator,
     ) -> FullInfoPolicyState:
+
+        # Only the reference agent initializes the shared policy.
+        if self.reference_agent_id is not None:
+            return ClonePolicyState(reference_agent_id=self.reference_agent_id)
+
+        self.reference_agent_id = agent_id
         nu = len(self.urgency_levels)
         nk = mechanism_dynamics.max_balance + 1  # karma states 0 … max_balance
 
@@ -146,7 +165,7 @@ class FullInfoLearningAgent(
         self._V = np.zeros((nu, nk), dtype=float)
         self._mechanism_dynamics = mechanism_dynamics
         self._world_dynamics = world_dynamics
-        return FullInfoPolicyState()
+        return FullInfoPolicyState(pi=pi.copy(), d=d.copy())
 
     def get_observation(
         self,
@@ -183,7 +202,11 @@ class FullInfoLearningAgent(
         assert md is not None, "_initialize_policy must be called before _get_action."
         nk = md.max_balance + 1
 
-        u_idx = self._state_idx_from_urgency(agent_state.private)
+        u_idx = int(agent_state.private)
+        if u_idx < 0 or u_idx >= len(self.urgency_levels):
+            raise ValueError(
+                f"Urgency index {u_idx} out of bounds for configured urgency_levels."
+            )
         k = int(np.clip(obs.agent_balance, 0, nk - 1))
 
         probs = self.pi[u_idx, k, : k + 1].copy()  # type: ignore[index]
@@ -198,21 +221,11 @@ class FullInfoLearningAgent(
         # Bid b for outcome index 1 = (True,)  = resource.
         return [0, b]
 
-    def adapt(
-        self,
-        previous: AgentState[int, FullInfoPolicyState],
-        observation: ResourceAgentObservation,
-        resolution: KarmaResolution,
-        reward: float,
-        timestep: int,
-        rng: np.random.Generator,
-    ) -> AgentState[int, FullInfoPolicyState]:
-        del resolution, reward, rng
-        # Shared update: only the first agent to arrive this timestep runs it.
-        if timestep == self._last_update_step:
-            return AgentState(private=previous.private, policy=previous.policy)
-        self._last_update_step = timestep
-
+    def _adapt_policy(
+        self, 
+        previous: AgentState[int, FullInfoPolicyState], 
+        observation: FullInfoObservation, 
+    ) -> FullInfoPolicyState:
         obs = cast(FullInfoObservation, observation)
         md = self._mechanism_dynamics
         assert md is not None
@@ -224,16 +237,16 @@ class FullInfoLearningAgent(
         # ----------------------------------------------------------
         # Step 1: Re-estimate d from simulation population state.
         # observation.population_privates/balances contain the post-transition
-        # (urgency, karma) pairs for all agents.
+        # (urgency index, karma) pairs for all agents.
         # ----------------------------------------------------------
         d_new = np.zeros((nu, nk), dtype=float)
-        for urgency, karma in zip(obs.population_privates, obs.population_balances):
-            try:
-                u_idx = self._state_idx_from_urgency(urgency)
-            except ValueError:
-                raise ValueError(f"Invalid urgency: {urgency}, urgency levels need to be homogeneous.")
+        for u_idx_raw, karma in zip(obs.population_privates, obs.population_balances):
+            u_idx = int(u_idx_raw)
+            if u_idx < 0 or u_idx >= nu:
+                raise ValueError(f"Invalid urgency index: {u_idx}.")
             if karma >= nk:
-                log.warning("invalid_karma", karma=karma, nk=nk)
+                # TODO: What should we do if max karma is exceeded?
+                # log.warning("invalid_karma", karma=karma, nk=nk)
                 # Apply clip to karma
                 karma = int(np.clip(karma, 0, nk - 1))
                 # raise ValueError(f"Invalid karma: {karma}, karma must be less than or equal to {nk}.")
@@ -395,9 +408,53 @@ class FullInfoLearningAgent(
 
         log.debug(
             "full_info_adapt",
-            timestep=timestep,
             mean_V=float(np.mean(self._V)),
             vi_delta=float(np.max(np.abs(V_new - self._V))),
         )
 
-        return AgentState(private=previous.private, policy=previous.policy)
+        return FullInfoPolicyState(pi=self.pi.copy(), d=self.d.copy())
+
+    def adapt(
+        self,
+        agent_id: int,
+        previous: AgentState[int, FullInfoPolicyState],
+        observation: ResourceAgentObservation,
+        resolution: KarmaResolution,
+        reward: float,
+        timestep: int,
+        rng: np.random.Generator,
+    ) -> tuple[AgentState[int, FullInfoPolicyState], bool]:
+        del reward, timestep, rng
+
+        # Only the reference agent adapts the shared policy.
+        if self.reference_agent_id != agent_id:
+            return previous, self._has_converged
+        else:
+            # Update the shared policy
+            new_policy_state = self._adapt_policy(previous, observation)
+
+            # Convergence checks analogous to vector norms:
+            # - Policy error: ‖π_next − π_prev‖_∞ over all (u, k, b)
+            # - Distribution error: ‖d_next − d_prev‖_2 over all (u, k)
+            policy_error = float(
+                np.linalg.norm(
+                    (new_policy_state.pi - previous.policy.pi).ravel(),
+                    ord=np.inf,
+                )
+            )
+            distribution_error = float(
+                np.linalg.norm(
+                    new_policy_state.d - previous.policy.d
+                )
+            )
+            self._has_converged = (
+                policy_error < self.cov_tol
+                # and distribution_error < self.cov_tol
+            )
+            # print(f"Policy error: {policy_error}, Distribution error: {distribution_error}")
+
+            new_agent_state = AgentState(
+                private=previous.private,
+                policy=new_policy_state,
+            )
+            return new_agent_state, self._has_converged

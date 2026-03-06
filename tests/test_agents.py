@@ -243,7 +243,9 @@ class TestResourceAgentUrgencyTransition:
 
     def test_initial_urgency_matches_config(self):
         state = self.agent.initialize(_world_dynamics(), None, _make_rng())
-        assert state.private == 0
+        # Private state stores the urgency *index*, which should match the
+        # index of the configured initial_urgency (0 in this test).
+        assert state.private == self.agent.initial_state
 
     def test_urgency_stays_in_valid_levels(self):
         from karma_pp.core.types import Resolution
@@ -253,7 +255,9 @@ class TestResourceAgentUrgencyTransition:
         rng = _make_rng(99)
         for _ in range(200):
             state = self.agent.update_state(state, obs, res, rng)
-            assert state.private in _URGENCY_LEVELS
+            # Private remains a valid urgency index and maps to a configured level.
+            assert 0 <= state.private < len(_URGENCY_LEVELS)
+            assert _URGENCY_LEVELS[state.private] in _URGENCY_LEVELS
 
     def test_invalid_urgency_raises(self):
         with pytest.raises(ValueError, match="not found"):

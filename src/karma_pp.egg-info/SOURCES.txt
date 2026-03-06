@@ -8,6 +8,7 @@ src/karma_pp.egg-info/dependency_links.txt
 src/karma_pp.egg-info/entry_points.txt
 src/karma_pp.egg-info/requires.txt
 src/karma_pp.egg-info/top_level.txt
+src/karma_pp/cli/db_commands.py
 src/karma_pp/cli/run_commands.py
 src/karma_pp/cli/vis_commands.py
 src/karma_pp/core/agent.py

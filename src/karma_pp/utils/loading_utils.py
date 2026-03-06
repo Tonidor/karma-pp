@@ -1,4 +1,5 @@
-import inspect
+# copy pasted since 2007
+
 import sys
 import traceback
 from typing import Any, Mapping, TypedDict
@@ -29,22 +30,17 @@ def instantiate(function_name: str, parameters: Mapping[str, Any]) -> Any:
         msg = f"instantiate(): Cannot find the function or constructor {function_name!r}."
         raise ValueError(msg) from e
 
-    # Validate parameters against the callable's signature before calling, so
-    # that a TypeError raised *inside* the constructor is not misreported as a
-    # bad-parameter error.
     try:
-        sig = inspect.signature(function)
-        sig.bind(**parameters)
-    except TypeError as e:
-        params = ", ".join(f"{k}={v!r}" for k, v in parameters.items())
-        msg = (
-            f"instantiate(): Cannot bind parameters for {function_name!r}\n"
-            f" with params {params}:\n{e}"
+        # XXX TypeError is too broad, we should bind the params explicitly
+        return function(**parameters)
+    except TypeError:
+        params = ", ".join(["{}={!r}".format(k, v) for (k, v) in parameters.items()])
+        msg = "instantiate(): Could not call function {!r}\n with params {}:".format(
+            function_name,
+            params,
         )
-        log.warning("instantiate_bind_failed", function_name=function_name, params=list(parameters.keys()))
-        raise ValueError(msg) from e
-
-    return function(**parameters)
+        msg += "\n" + traceback.format_exc()
+        raise ValueError(msg)
 
 
 def import_name(name: str) -> Any:
@@ -55,8 +51,7 @@ def import_name(name: str) -> Any:
     """
     expected = (ImportError,)
     try:
-        obj = __import__(name, fromlist=["dummy"])
-        return obj
+        return __import__(name, fromlist=["dummy"])
     except expected:
         # split in (module, name) if we can
         if "." in name:

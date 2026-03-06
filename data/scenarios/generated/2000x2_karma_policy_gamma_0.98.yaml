@@ -1,0 +1,45 @@
+world:
+  code: karma_pp.impl.worlds.resource_world.resource_world.ResourceWorld
+  parameters:
+    resource_capacities:
+    - 1
+    collective_size_distribution:
+      2: 1.0
+mechanism:
+  code: karma_pp.impl.mechanisms.karma.karma_mechanism.KarmaMechanism
+  parameters:
+    selection_rule:
+      code: karma_pp.impl.mechanisms.karma.max_sum_selection_rule.MaxSumSelectionRule
+      parameters: {}
+    redistribution_rule:
+      code: karma_pp.impl.mechanisms.karma.winners_pay_redistribution_rule.WinnersPayRedistributionRule
+      parameters: {}
+    weight_karma_ratio: 10
+    max_balance: 20
+population:
+  pi_policy:
+    n_agents: 2000
+    weight: 1.0
+    agent_model:
+      code: karma_pp.impl.agents.pi_resource_agent.PiResourceAgent
+      parameters:
+        transition_matrix:
+        - - 0.95
+          - 0.05
+          - 0.0
+        - - 0.0
+          - 0.5
+          - 0.5
+        - - 0.95
+          - 0.05
+          - 0.0
+        urgency_levels:
+        - 1
+        - 1
+        - 10
+        initial_urgency: 1
+        reward_per_resource:
+        - 0.0
+        no_resource_penalty:
+        - -1.0
+        policy_path: data/policies/2000x2_full_info_gamma_0.98_seed3_pi.npy

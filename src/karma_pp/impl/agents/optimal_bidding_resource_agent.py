@@ -83,6 +83,7 @@ class OptimalBiddingResourceAgent(
 
     def _initialize_policy(
         self,
+        agent_id: int,
         world_dynamics: ResourceWorldDynamics,
         mechanism_dynamics: KarmaDynamics,
         rng: np.random.Generator,
@@ -130,7 +131,10 @@ class OptimalBiddingResourceAgent(
         policy = agent_state.policy
         balance = int(np.clip(observation.agent_balance, 0, policy.max_balance))
         lambda_k = self._shadow_price(balance=balance, policy=policy)
-        urgency = int(agent_state.private)
+        idx = int(agent_state.private)
+        if idx < 0 or idx >= len(self.urgency_levels):
+            raise ValueError(f"Urgency index {idx} out of bounds for configured urgency_levels.")
+        urgency = int(self.urgency_levels[idx])
         n_resources = policy.n_outcomes - 1
 
         # Utility gain per outcome: 0 for null outcome, then the actual reward
@@ -157,13 +161,14 @@ class OptimalBiddingResourceAgent(
 
     def adapt(
         self,
+        agent_id: int,
         previous: AgentState[int, OptimalBiddingPolicyState],
         observation: OptimalBiddingObservation,
         resolution: KarmaResolution,
         reward: float | None,
         timestep: int,
         rng: np.random.Generator,
-    ) -> AgentState[int, OptimalBiddingPolicyState]:
+    ) -> tuple[AgentState[int, OptimalBiddingPolicyState], bool]:
         del rng
         if timestep <= 1:
             return AgentState(private=previous.private, policy=previous.policy)
@@ -212,7 +217,11 @@ class OptimalBiddingResourceAgent(
             max_balance=old.max_balance,
             n_outcomes=old.n_outcomes,
         )
-        return AgentState(private=previous.private, policy=new_policy)
+
+        # TODO: Check if the policy has converged
+        has_converged = False
+        new_agent_state = AgentState(private=previous.private, policy=new_policy)
+        return new_agent_state, has_converged
 
     def _value(self, balance: int, policy: OptimalBiddingPolicyState) -> float:
         return policy.value_weight * math.log1p(max(0, balance)) + policy.value_bias
